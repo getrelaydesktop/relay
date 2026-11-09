@@ -815,6 +815,10 @@ fn install_rendering(ui: &Desktop) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    slint::BackendSelector::new()
+        .backend_name("winit".into())
+        .renderer_name("skia".into())
+        .select()?;
     let ui = Desktop::new()?;
     install_rendering(&ui);
     menu_animation::install(&ui);

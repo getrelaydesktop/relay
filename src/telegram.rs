@@ -471,7 +471,15 @@ impl Worker {
                 download_image(&client, &photo, 1024 * 1024, 1024).await
             };
             if let Ok(Ok(pixels)) = tokio::time::timeout(Duration::from_secs(15), download).await {
-                let pixels = image::imageops::thumbnail(&pixels, 120, 120);
+                // Keep enough source detail for high-DPI avatars. Skia samples
+                // and clips this image at the actual display scale.
+                let pixels = if pixels.width() > 256 || pixels.height() > 256 {
+                    image::DynamicImage::ImageRgba8(pixels)
+                        .resize(256, 256, image::imageops::FilterType::Lanczos3)
+                        .into_rgba8()
+                } else {
+                    pixels
+                };
                 let _ = tx.send(TgEvent::AvatarReady {
                     peer_id: id,
                     pixels,

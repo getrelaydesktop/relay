@@ -1,10 +1,53 @@
 //! Render the real interface without a desktop session, files or Telegram login.
 use super::*;
-use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+use i_slint_renderer_skia::{SkiaRenderer, SkiaSharedContext};
 use slint::platform::{Platform, PlatformError, WindowAdapter, WindowEvent};
-use slint::{LogicalPosition, PhysicalSize, Rgb8Pixel, SharedPixelBuffer};
+use slint::{LogicalPosition, PhysicalSize, Rgba8Pixel};
+use std::cell::Cell;
 
-struct PreviewPlatform(Rc<MinimalSoftwareWindow>);
+struct PreviewPlatform(Rc<PreviewWindow>);
+
+struct PreviewWindow {
+    window: slint::Window,
+    renderer: SkiaRenderer,
+    size: Cell<PhysicalSize>,
+}
+
+impl PreviewWindow {
+    fn new() -> Rc<Self> {
+        Rc::new_cyclic(|weak: &std::rc::Weak<Self>| Self {
+            window: slint::Window::new(weak.clone()),
+            renderer: SkiaRenderer::default(&SkiaSharedContext::default()),
+            size: Cell::new(PhysicalSize::new(1100, 720)),
+        })
+    }
+}
+
+impl std::ops::Deref for PreviewWindow {
+    type Target = slint::Window;
+    fn deref(&self) -> &Self::Target {
+        &self.window
+    }
+}
+
+impl WindowAdapter for PreviewWindow {
+    fn window(&self) -> &slint::Window {
+        &self.window
+    }
+    fn renderer(&self) -> &dyn slint::platform::Renderer {
+        &self.renderer
+    }
+    fn size(&self) -> PhysicalSize {
+        self.size.get()
+    }
+    fn set_size(&self, size: slint::WindowSize) {
+        let scale = self.window.scale_factor();
+        self.size.set(size.to_physical(scale));
+        self.window.dispatch_event(WindowEvent::Resized {
+            size: size.to_logical(scale),
+        });
+    }
+}
 
 impl Platform for PreviewPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
@@ -14,11 +57,18 @@ impl Platform for PreviewPlatform {
 
 #[test]
 fn portable_interface_renders_icons_at_multiple_scales() {
-    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    let window = PreviewWindow::new();
     slint::platform::set_platform(Box::new(PreviewPlatform(window.clone()))).unwrap();
     let ui = Desktop::new().unwrap();
     install_rendering(&ui);
-    let chats = Demo::demo_chats();
+    let mut chats = Demo::demo_chats();
+    // Exercise the downloaded-photo path, rather than only pre-rounded
+    // placeholder images. The old software renderer left these square.
+    let photo = image::RgbaImage::from_fn(138, 138, |_, y| {
+        image::Rgba([48, 160 - (y / 3) as u8, 230, 255])
+    });
+    chats[0].row.avatar = slint_image(&photo);
+    chats[0].row.has_avatar = true;
     ui.set_chats(ModelRc::new(VecModel::from(
         chats
             .iter()
@@ -91,16 +141,15 @@ fn portable_interface_renders_icons_at_multiple_scales() {
         });
         let physical_width = (width as f32 * scale) as u32;
         let physical_height = (720.0 * scale) as u32;
-        window.set_size(PhysicalSize::new(physical_width, physical_height));
+        window
+            .window
+            .set_size(PhysicalSize::new(physical_width, physical_height));
         slint::platform::update_timers_and_animations();
-        let mut pixels = SharedPixelBuffer::<Rgb8Pixel>::new(physical_width, physical_height);
+        let mut pixels = window.take_snapshot().unwrap();
         // The first pass resolves the list's item sizes; the second positions
         // the short conversation against the bottom of the viewport.
         for _ in 0..2 {
-            window.request_redraw();
-            assert!(window.draw_if_needed(|renderer| {
-                renderer.render(pixels.make_mut_slice(), physical_width as usize);
-            }));
+            pixels = window.take_snapshot().unwrap();
         }
         if name == "menu" {
             let position = LogicalPosition::new(1074.0, 53.0);
@@ -112,10 +161,7 @@ fn portable_interface_renders_icons_at_multiple_scales() {
                 position,
                 button: slint::platform::PointerEventButton::Left,
             });
-            window.request_redraw();
-            window.draw_if_needed(|renderer| {
-                renderer.render(pixels.make_mut_slice(), physical_width as usize);
-            });
+            pixels = window.take_snapshot().unwrap();
         }
         if channel {
             let mut incoming = 0;
@@ -125,18 +171,20 @@ fn portable_interface_renders_icons_at_multiple_scales() {
                     let pixel = pixels.as_slice()[y * physical_width as usize + x];
                     incoming += usize::from(
                         pixel
-                            == Rgb8Pixel {
+                            == Rgba8Pixel {
                                 r: 24,
                                 g: 37,
                                 b: 51,
+                                a: 255,
                             },
                     );
                     outgoing += usize::from(
                         pixel
-                            == Rgb8Pixel {
+                            == Rgba8Pixel {
                                 r: 43,
                                 g: 82,
                                 b: 120,
+                                a: 255,
                             },
                     );
                 }
@@ -152,6 +200,16 @@ fn portable_interface_renders_icons_at_multiple_scales() {
                     + (x as f32 * scale) as u32) as usize]
             };
             let background = pixel(12, 45);
+            assert_eq!(
+                pixel(82, 88),
+                pixel(76, 88),
+                "photo avatar must have clipped corners at {scale}x"
+            );
+            assert_ne!(
+                pixel(105, 111),
+                pixel(76, 88),
+                "photo avatar center must remain visible at {scale}x"
+            );
             assert!(
                 (22..50).any(|x| (40..65).any(|y| pixel(x, y) != background)),
                 "missing menu icon at {scale}x"
@@ -170,7 +228,7 @@ fn portable_interface_renders_icons_at_multiple_scales() {
                 pixels.as_bytes(),
                 physical_width,
                 physical_height,
-                image::ColorType::Rgb8,
+                image::ColorType::Rgba8,
             )
             .unwrap();
         }

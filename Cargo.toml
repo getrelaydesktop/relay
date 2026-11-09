@@ -5,7 +5,7 @@ edition = "2024"
 license = "GPL-3.0-only"
 
 [dependencies]
-slint = { version = "=1.16.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2", "unstable-winit-030"] }
+slint = { version = "=1.16.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "compat-1-2", "unstable-winit-030"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
@@ -23,6 +23,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 
 [build-dependencies]
 slint-build = "=1.16.1"
+
+[dev-dependencies]
+# Render UI regression tests with the same engine as the application.
+i-slint-renderer-skia = "=1.16.1"
 
 [profile.release.package.relay-desktop]
 opt-level = 1
