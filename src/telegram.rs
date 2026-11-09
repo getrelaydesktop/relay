@@ -29,6 +29,8 @@ pub struct TgMessage {
     pub body: String,
     pub time: String,
     pub outgoing: bool,
+    pub channel_post: bool,
+    pub service: bool,
 }
 #[derive(Debug, Clone)]
 pub struct TgDialog {
@@ -340,7 +342,7 @@ fn message(m: &grammers_client::message::Message) -> TgMessage {
         is_photo: matches!(&media, Some(grammers_client::media::Media::Photo(_)))
             || matches!(&media, Some(grammers_client::media::Media::Document(d)) if d.mime_type().is_some_and(|m| m.starts_with("image/"))),
         body: match (label.is_empty(), m.text().is_empty()) {
-            (true, _) => m.text().into(),
+            (true, _) => m.action().map(service_text).unwrap_or_else(|| m.text().into()),
             (false, true) => label,
             _ => format!("{label}\n{}", m.text()),
         },
@@ -350,6 +352,27 @@ fn message(m: &grammers_client::message::Message) -> TgMessage {
             .format("%H:%M")
             .to_string(),
         outgoing: m.outgoing(),
+        channel_post: m.post(),
+        service: m.action().is_some(),
+    }
+}
+
+fn service_text(action: &tl::enums::MessageAction) -> String {
+    use tl::enums::MessageAction;
+    match action {
+        MessageAction::ChannelCreate(_) => "Канал создан".into(),
+        MessageAction::ChatCreate(_) => "Группа создана".into(),
+        MessageAction::ChatEditTitle(value) => format!("Название изменено на «{}»", value.title),
+        MessageAction::ChatEditPhoto(_) => "Фото чата обновлено".into(),
+        MessageAction::ChatDeletePhoto => "Фото чата удалено".into(),
+        MessageAction::ChatAddUser(_) => "Добавлен участник".into(),
+        MessageAction::ChatDeleteUser(_) => "Участник покинул чат".into(),
+        MessageAction::ChatJoinedByLink(_) | MessageAction::ChatJoinedByRequest => "Новый участник в группе".into(),
+        MessageAction::PinMessage => "Сообщение закреплено".into(),
+        MessageAction::HistoryClear => "История очищена".into(),
+        MessageAction::ContactSignUp => "Контакт присоединился к Telegram".into(),
+        MessageAction::CustomAction(value) => value.message.clone(),
+        _ => "Событие в чате".into(),
     }
 }
 struct LoginToken {

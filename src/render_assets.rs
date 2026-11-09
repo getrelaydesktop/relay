@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, path::Path};
+use std::collections::HashMap;
 
 use image::imageops::FilterType;
 use slint::{Color, Image, Rgba8Pixel, SharedPixelBuffer};
@@ -19,48 +19,94 @@ pub struct Assets {
 impl Assets {
     pub fn new() -> Self {
         let mut raw_icons = HashMap::new();
-        for name in [
-            "advanced",
-            "back",
-            "call",
-            "channel",
-            "chat-settings",
-            "chats",
-            "clip",
-            "close",
-            "edit-folders",
-            "folder",
-            "groups_create",
-            "language",
-            "maximize",
-            "menu",
-            "mic",
-            "minimize",
-            "moon",
-            "more",
-            "notifications",
-            "panel",
-            "personal",
-            "phone",
-            "power",
-            "privacy",
-            "profile",
-            "read",
-            "saved",
-            "search",
-            "send",
-            "settings",
-            "smile",
-            "tail-left",
-            "tail-right",
-            "window-close",
+        // Keep the original 3x masks in the executable. A portable build must
+        // never depend on its launch directory or on a source checkout.
+        for (name, bytes) in [
+            (
+                "advanced",
+                include_bytes!("../ui/icons/advanced.png") as &[u8],
+            ),
+            ("back", include_bytes!("../ui/icons/back.png") as &[u8]),
+            ("call", include_bytes!("../ui/icons/call.png") as &[u8]),
+            (
+                "channel",
+                include_bytes!("../ui/icons/channel.png") as &[u8],
+            ),
+            (
+                "chat-settings",
+                include_bytes!("../ui/icons/chat-settings.png") as &[u8],
+            ),
+            ("chats", include_bytes!("../ui/icons/chats.png") as &[u8]),
+            ("clip", include_bytes!("../ui/icons/clip.png") as &[u8]),
+            ("close", include_bytes!("../ui/icons/close.png") as &[u8]),
+            (
+                "edit-folders",
+                include_bytes!("../ui/icons/edit-folders.png") as &[u8],
+            ),
+            ("folder", include_bytes!("../ui/icons/folder.png") as &[u8]),
+            (
+                "groups_create",
+                include_bytes!("../ui/icons/groups_create.png") as &[u8],
+            ),
+            (
+                "language",
+                include_bytes!("../ui/icons/language.png") as &[u8],
+            ),
+            (
+                "maximize",
+                include_bytes!("../ui/icons/maximize.png") as &[u8],
+            ),
+            ("menu", include_bytes!("../ui/icons/menu.png") as &[u8]),
+            ("mic", include_bytes!("../ui/icons/mic.png") as &[u8]),
+            (
+                "minimize",
+                include_bytes!("../ui/icons/minimize.png") as &[u8],
+            ),
+            ("moon", include_bytes!("../ui/icons/moon.png") as &[u8]),
+            ("more", include_bytes!("../ui/icons/more.png") as &[u8]),
+            (
+                "notifications",
+                include_bytes!("../ui/icons/notifications.png") as &[u8],
+            ),
+            ("panel", include_bytes!("../ui/icons/panel.png") as &[u8]),
+            (
+                "personal",
+                include_bytes!("../ui/icons/personal.png") as &[u8],
+            ),
+            ("phone", include_bytes!("../ui/icons/phone.png") as &[u8]),
+            ("power", include_bytes!("../ui/icons/power.png") as &[u8]),
+            (
+                "privacy",
+                include_bytes!("../ui/icons/privacy.png") as &[u8],
+            ),
+            (
+                "profile",
+                include_bytes!("../ui/icons/profile.png") as &[u8],
+            ),
+            ("read", include_bytes!("../ui/icons/read.png") as &[u8]),
+            ("saved", include_bytes!("../ui/icons/saved.png") as &[u8]),
+            ("search", include_bytes!("../ui/icons/search.png") as &[u8]),
+            ("send", include_bytes!("../ui/icons/send.png") as &[u8]),
+            (
+                "settings",
+                include_bytes!("../ui/icons/settings.png") as &[u8],
+            ),
+            ("smile", include_bytes!("../ui/icons/smile.png") as &[u8]),
+            (
+                "tail-left",
+                include_bytes!("../ui/icons/tail-left.png") as &[u8],
+            ),
+            (
+                "tail-right",
+                include_bytes!("../ui/icons/tail-right.png") as &[u8],
+            ),
+            (
+                "window-close",
+                include_bytes!("../ui/icons/window-close.png") as &[u8],
+            ),
         ] {
-            let path = Path::new("ui/icons").join(format!("{name}.png"));
-            if let Ok(bytes) = fs::read(&path)
-                && let Ok(img) = image::load_from_memory(&bytes)
-            {
-                raw_icons.insert(name, img.to_rgba8());
-            }
+            let img = image::load_from_memory(bytes).expect("invalid bundled interface icon");
+            raw_icons.insert(name, img.to_rgba8());
         }
         Self {
             raw_icons,

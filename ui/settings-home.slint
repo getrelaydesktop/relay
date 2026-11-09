@@ -90,8 +90,8 @@ export component SettingsHome inherits Rectangle {
         Image {
             x: 23px;
             y: (parent.height - self.height) / 2;
-            width: self.source.width * 1px;
-            height: self.source.height * 1px;
+            width: self.source.width / Theme.raster-scale * 1px;
+            height: self.source.height / Theme.raster-scale * 1px;
             source: Theme.render-icon(
                 index == 0 ? "profile"
                 : index == 1 ? "notifications"

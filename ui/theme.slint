@@ -1,4 +1,7 @@
 export global Theme {
+    // Original Telegram masks are 3x. Render custom shapes at the same
+    // resolution, retaining smooth edges at 125%, 150% and 200% display scale.
+    out property <int> raster-scale: 3;
     in-out property <int> design: 0;
     in-out property <bool> dark: true;
     in-out property <color> seed: #4266a7;
@@ -45,7 +48,7 @@ export global Theme {
         ? (dark ? seed.darker(0.55) : seed.brighter(0.88))
         : (dark ? #2b5278 : #effdde);
     out property <length> control-radius: material ? 20px : fluent ? 8px : 10px;
-    out property <length> bubble-radius: material ? 18px : fluent ? 10px : 14px;
+    out property <length> bubble-radius: material ? 18px : fluent ? 10px : 6px;
 
     pure callback render-icon(string, color) -> image;
     pure callback render-avatar(int, color, color, bool) -> image;
@@ -125,6 +128,36 @@ export component ActionButton inherits Rectangle {
     }
 }
 
+export component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 34px;
+    min-width: 190px;
+    background: pointer.has-hover && enabled ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-enabled: enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    Text {
+        x: 18px;
+        width: parent.width - 36px;
+        height: parent.height;
+        text: root.text;
+        color: Theme.ink;
+        opacity: root.enabled ? 1 : 0.45;
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+    pointer := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 export component Entry inherits Rectangle {
     in property <bool> read-only: false;
     in-out property <string> text;
@@ -189,8 +222,8 @@ export component Entry inherits Rectangle {
         Image {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            width: self.source.width * 1px;
-            height: self.source.height * 1px;
+            width: self.source.width / Theme.raster-scale * 1px;
+            height: self.source.height / Theme.raster-scale * 1px;
             source: Theme.render-icon("close", clear-hit.has-hover ? Theme.icon-hover-fg : Theme.icon-fg);
         }
         clear-hit := TouchArea {
@@ -224,8 +257,8 @@ export component IconButton inherits Rectangle {
     Image {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: self.source.width * 1px;
-        height: self.source.height * 1px;
+        width: self.source.width / Theme.raster-scale * 1px;
+        height: self.source.height / Theme.raster-scale * 1px;
         source: Theme.render-icon(
             root.icon,
             root.active ? Theme.accent : hit.has-hover && root.enabled ? Theme.icon-hover-fg : Theme.icon-fg

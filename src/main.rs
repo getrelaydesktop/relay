@@ -11,6 +11,8 @@ mod preferences;
 mod qr;
 mod render_assets;
 mod telegram;
+#[cfg(test)]
+mod visual_tests;
 
 const AVATAR_PALETTES: [((u8, u8, u8), (u8, u8, u8)); 7] = [
     ((255, 136, 94), (228, 82, 70)),
@@ -744,6 +746,8 @@ fn message(body: &str, time: &str, outgoing: bool) -> MessageRow {
         body: body.into(),
         time: time.into(),
         outgoing,
+        channel_post: false,
+        service: false,
     }
 }
 
@@ -756,6 +760,8 @@ fn live_message(m: &telegram::TgMessage) -> MessageRow {
         body: m.body.clone().into(),
         time: m.time.clone().into(),
         outgoing: m.outgoing,
+        channel_post: m.channel_post,
+        service: m.service,
     }
 }
 
@@ -763,39 +769,38 @@ fn chat_preview(text: &str) -> slint::SharedString {
     text.split_whitespace().collect::<Vec<_>>().join(" ").into()
 }
 
-fn main() -> Result<(), slint::PlatformError> {
-    let ui = Desktop::new()?;
+fn install_rendering(ui: &Desktop) {
     let assets = Rc::new(RefCell::new(render_assets::Assets::new()));
 
     {
         let theme = ui.global::<Theme>();
         let assets_icon = Rc::clone(&assets);
         theme.on_render_icon(move |name, color| {
-            assets_icon.borrow_mut().icon(name.as_str(), color, 1.0)
+            assets_icon.borrow_mut().icon(name.as_str(), color, 3.0)
         });
         let assets_avatar = Rc::clone(&assets);
         theme.on_render_avatar(move |size, top, bottom, saved| {
             assets_avatar
                 .borrow_mut()
-                .avatar(size.max(2) as u32, top, bottom, saved)
+                .avatar(size.max(2) as u32 * 3, top, bottom, saved)
         });
         let assets_pill = Rc::clone(&assets);
         theme.on_render_pill(move |w, h, fill, border, border_px| {
             assets_pill.borrow_mut().pill(
-                w.max(2) as u32,
-                h.max(2) as u32,
+                w.max(2) as u32 * 3,
+                h.max(2) as u32 * 3,
                 fill,
                 border,
-                border_px.max(0) as f32,
+                border_px.max(0) as f32 * 3.0,
             )
         });
         let assets_bubble = Rc::clone(&assets);
         theme.on_render_bubble(move |body_w, h, tail_w, radius, fill, tail_mode| {
             assets_bubble.borrow_mut().bubble(
-                body_w.max(2) as u32,
-                h.max(2) as u32,
-                tail_w.max(0) as u32,
-                radius.max(0) as u32,
+                body_w.max(2) as u32 * 3,
+                h.max(2) as u32 * 3,
+                tail_w.max(0) as u32 * 3,
+                radius.max(0) as u32 * 3,
                 fill,
                 tail_mode.clamp(0, 2) as u8,
             )
@@ -807,7 +812,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 .qr_card(matrix.as_str(), size.max(64) as u32, accent)
         });
     }
+}
 
+fn main() -> Result<(), slint::PlatformError> {
+    let ui = Desktop::new()?;
+    install_rendering(&ui);
     menu_animation::install(&ui);
     let weak = ui.as_weak();
     ui.on_minimize_window(move || {
