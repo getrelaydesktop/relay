@@ -35,7 +35,7 @@ pub fn file_preview(path: &str) -> Result<Option<image::RgbaImage>, String> {
 pub fn retain(row: &mut MessageRow, old: &MessageRow) {
     row.send_token = old.send_token;
     row.receive_token = old.receive_token;
-    if row.is_photo && old.is_photo {
+    if row.is_photo && old.is_photo && row.photo_key == old.photo_key {
         row.preview = old.preview.clone();
         row.has_preview = old.has_preview;
         row.preview_failed = old.preview_failed;
@@ -74,5 +74,70 @@ pub fn resolve_local(rows: &VecModel<MessageRow>, title: &str) {
                 rows.set_row_data(index, row);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn replies_follow_edits_but_keep_explicit_quotes_and_external_authors() {
+        let rows = VecModel::from(vec![
+            MessageRow {
+                id: 1,
+                sender: "Анна".into(),
+                body: "Изменённый оригинал".into(),
+                ..Default::default()
+            },
+            MessageRow {
+                id: 2,
+                reply_to: 1,
+                ..Default::default()
+            },
+            MessageRow {
+                id: 3,
+                reply_to: 1,
+                reply_quoted: true,
+                reply_body: "Выбранный фрагмент".into(),
+                ..Default::default()
+            },
+            MessageRow {
+                id: 4,
+                reply_to: 1,
+                reply_external: true,
+                reply_author: "Другой чат".into(),
+                ..Default::default()
+            },
+        ]);
+        resolve_local(&rows, "Группа");
+        assert_eq!(rows.row_data(1).unwrap().reply_body, "Изменённый оригинал");
+        assert_eq!(rows.row_data(1).unwrap().reply_author, "Анна");
+        assert_eq!(rows.row_data(2).unwrap().reply_body, "Выбранный фрагмент");
+        assert_eq!(rows.row_data(3).unwrap().reply_author, "Другой чат");
+    }
+    #[test]
+    fn attachment_preview_decodes_bounds_and_rejects_corrupt_images() {
+        let dir = std::env::temp_dir().join(format!(
+            "relay-preview-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let photo = dir.join("image.png");
+        image::RgbaImage::from_pixel(1200, 900, image::Rgba([20, 160, 80, 255]))
+            .save(&photo)
+            .unwrap();
+        let preview = file_preview(photo.to_str().unwrap()).unwrap().unwrap();
+        assert_eq!((preview.width(), preview.height()), (960, 720));
+        let corrupt = dir.join("corrupt.png");
+        std::fs::write(&corrupt, b"not an image").unwrap();
+        assert!(file_preview(corrupt.to_str().unwrap()).is_err());
+        assert!(file_preview("").unwrap().is_none());
+        std::fs::remove_file(photo).unwrap();
+        std::fs::remove_file(corrupt).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 }

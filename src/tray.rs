@@ -221,3 +221,33 @@ unsafe fn make_icon(instance: HINSTANCE) -> HICON {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn notification_window_dispatches_restore_and_shuts_down() {
+        let (send, receive) = mpsc::channel();
+        let tray = match Tray::new(
+            move || {
+                let _ = send.send(());
+            },
+            || {},
+        ) {
+            Ok(tray) => tray,
+            Err(error) => {
+                eprintln!(
+                    "No Windows notification area available for tray integration test: {error}"
+                );
+                return;
+            }
+        };
+        unsafe {
+            PostMessageW(tray.hwnd as HWND, CALLBACK, 1, WM_LBUTTONUP as isize);
+        }
+        receive
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("tray callback must dispatch from its blocking message queue");
+        drop(tray);
+    }
+}

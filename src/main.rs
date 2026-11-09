@@ -387,6 +387,7 @@ impl Demo {
                 telegram::TgEvent::Thumbnail {
                     peer_id,
                     message_id,
+                    key,
                     pixels,
                 } => {
                     self.detail_requests.remove(&(peer_id, message_id));
@@ -395,11 +396,24 @@ impl Demo {
                             chat.messages.iter().position(|row| row.id == message_id)
                         {
                             let mut row = chat.messages.row_data(index).unwrap();
+                            if !key.is_empty() && row.photo_key != key {
+                                continue;
+                            }
                             row.preview_failed = pixels.is_none();
                             if let Some(pixels) = pixels {
                                 let bytes = pixels.len();
                                 row.preview = slint_image(&pixels);
                                 row.has_preview = true;
+                                let mut freed = 0;
+                                self.preview_lru.retain(|&(peer, mid, bytes)| {
+                                    if peer == peer_id && mid == message_id {
+                                        freed += bytes;
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                });
+                                self.preview_bytes = self.preview_bytes.saturating_sub(freed);
                                 self.preview_lru.push_back((peer_id, message_id, bytes));
                                 self.preview_bytes += bytes;
                             }
@@ -862,8 +876,7 @@ impl Demo {
         let reveal = incoming
             && !msg.outgoing
             && active
-            && ui.get_show_chat()
-            && ui.get_has_chat()
+            && ui.get_conversation_visible()
             && !ui.get_auth_required()
             && ui.get_window_visible()
             && ui.get_history_at_bottom();
@@ -871,6 +884,9 @@ impl Demo {
             let index = chat.messages.iter().position(|m| m.id == msg.id);
             if let Some(i) = index {
                 let mut row = live_message(msg);
+                if row.photo_key != chat.messages.row_data(i).unwrap().photo_key {
+                    self.detail_requests.remove(&(peer_id, msg.id));
+                }
                 details::retain(&mut row, &chat.messages.row_data(i).unwrap());
                 chat.messages.set_row_data(i, row);
             } else {
@@ -998,6 +1014,7 @@ fn live_message(m: &telegram::TgMessage) -> MessageRow {
         reply_external: m.reply_external,
         photo_width: m.photo_width,
         photo_height: m.photo_height,
+        photo_key: m.media_key.clone().into(),
         id: m.id,
         date: m.date.clone().into(),
         has_media: m.has_media,
@@ -1504,7 +1521,8 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui.set_reply_message(0);
                 ui.set_edit_message_id(0);
                 ui.set_selected_message(0);
-                ui.set_draft(Default::default());
+                ui.set_reply_author(Default::default());
+                ui.set_reply_body(Default::default());
             }
             "reply" if mid > 0 => {
                 ui.set_reply_message(mid);

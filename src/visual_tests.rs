@@ -942,6 +942,7 @@ fn verify_photos_and_replies(window: &PreviewWindow, ui: &Desktop) {
         .send(telegram::TgEvent::Thumbnail {
             peer_id: 0,
             message_id: 3,
+            key: String::new(),
             pixels: Some(image::RgbaImage::from_pixel(
                 640,
                 480,
@@ -1042,6 +1043,47 @@ fn verify_photos_and_replies(window: &PreviewWindow, ui: &Desktop) {
     state.poll_telegram(ui);
     assert!(state.chats[0].messages.row_data(2).unwrap().has_preview);
     assert_eq!(state.chats[0].messages.row_data(1).unwrap().reply_to, 1);
+    let mut replacement = photo.clone();
+    replacement.media_key = "new-photo".into();
+    events
+        .send(telegram::TgEvent::MessageEdited {
+            peer_id: 0,
+            message: replacement,
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    assert!(!state.chats[0].messages.row_data(2).unwrap().has_preview);
+    events
+        .send(telegram::TgEvent::Thumbnail {
+            peer_id: 0,
+            message_id: 3,
+            key: "old-photo".into(),
+            pixels: Some(image::RgbaImage::from_pixel(
+                640,
+                480,
+                image::Rgba([220, 20, 20, 255]),
+            )),
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    assert!(
+        !state.chats[0].messages.row_data(2).unwrap().has_preview,
+        "a late download must not replace an edited photo"
+    );
+    events
+        .send(telegram::TgEvent::Thumbnail {
+            peer_id: 0,
+            message_id: 3,
+            key: "new-photo".into(),
+            pixels: Some(image::RgbaImage::from_pixel(
+                640,
+                480,
+                image::Rgba([20, 160, 80, 255]),
+            )),
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    assert!(state.chats[0].messages.row_data(2).unwrap().has_preview);
     ui.set_reply_message(1);
     ui.set_reply_author("Анна".into());
     ui.set_reply_body(parent.body.clone().into());
@@ -1049,6 +1091,27 @@ fn verify_photos_and_replies(window: &PreviewWindow, ui: &Desktop) {
     window.take_snapshot().unwrap();
     save_animation_frame("reply-composer", &window.take_snapshot().unwrap());
     ui.set_reply_message(0);
+    ui.set_file_preview(state.chats[0].messages.row_data(2).unwrap().preview);
+    ui.set_has_file_preview(true);
+    ui.set_file_open(true);
+    window.advance(0);
+    window.take_snapshot().unwrap();
+    window.advance(200);
+    let preview = window.take_snapshot().unwrap();
+    assert!(
+        preview
+            .as_slice()
+            .iter()
+            .filter(|p| p.r == 20 && p.g == 160 && p.b == 80)
+            .count()
+            > 1000
+    );
+    save_animation_frame("attachment-preview", &preview);
+    ui.set_file_open(false);
+    window.advance(0);
+    window.take_snapshot().unwrap();
+    window.advance(200);
+    window.take_snapshot().unwrap();
     let rows: Vec<_> = (1..30)
         .map(|id| {
             let mut row = message("Более раннее сообщение\nПереход из цитаты", "12:00", false);

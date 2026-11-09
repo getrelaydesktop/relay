@@ -41,6 +41,7 @@ pub struct TgMessage {
     pub reply_external: bool,
     pub photo_width: i32,
     pub photo_height: i32,
+    pub media_key: String,
 }
 #[derive(Debug, Clone)]
 pub struct TgDialog {
@@ -96,6 +97,7 @@ pub enum TgEvent {
     Thumbnail {
         peer_id: i32,
         message_id: i32,
+        key: String,
         pixels: Option<image::RgbaImage>,
     },
     ReplyResolved {
@@ -456,6 +458,7 @@ fn message(m: &grammers_client::message::Message) -> TgMessage {
         reply_external,
         photo_width,
         photo_height,
+        media_key: media_key(media.as_ref()),
         id: m.id(),
         date: m
             .date()
@@ -905,6 +908,7 @@ impl Worker {
                             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(TgEvent::Thumbnail {
                                 peer_id: id,
                                 message_id: mid,
+                                key: media_key(source.media().as_ref()),
                                 pixels: Some(pixels),
                             })
                         } else {
@@ -925,6 +929,7 @@ impl Worker {
                                 TgEvent::Thumbnail {
                                     peer_id: id,
                                     message_id: mid,
+                                    key: String::new(),
                                     pixels: None,
                                 }
                             } else {
@@ -1382,6 +1387,7 @@ impl Worker {
                 });
             }
             TgCommand::Logout => {
+                self.online_until.clear();
                 self.client.sign_out().await?;
                 self.avatar_tasks.abort_all();
                 self.peers.clear();
@@ -1397,6 +1403,54 @@ impl Worker {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+    #[test]
+    fn bridge_coalesces_notifications_and_stays_idle_without_events() {
+        let (bridge, _commands, events) = TelegramBridge::offline_for_rendering();
+        let wakeups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = wakeups.clone();
+        bridge.notify_with(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        });
+        assert_eq!(wakeups.load(Ordering::Relaxed), 1);
+        bridge.begin_poll();
+        events
+            .send(TgEvent::OperationDone {
+                message: "one".into(),
+            })
+            .unwrap();
+        events
+            .send(TgEvent::OperationDone {
+                message: "two".into(),
+            })
+            .unwrap();
+        assert_eq!(wakeups.load(Ordering::Relaxed), 2);
+        assert!(
+            bridge.try_recv().is_some()
+                && bridge.try_recv().is_some()
+                && bridge.try_recv().is_none()
+        );
+        bridge.begin_poll();
+        assert_eq!(wakeups.load(Ordering::Relaxed), 2);
+        events
+            .send(TgEvent::OperationDone {
+                message: "three".into(),
+            })
+            .unwrap();
+        assert_eq!(wakeups.load(Ordering::Relaxed), 3);
+    }
+}
+fn media_key(media: Option<&grammers_client::media::Media>) -> String {
+    use grammers_client::media::Media;
+    match media {
+        Some(Media::Photo(photo)) => format!("photo:{}", photo.id()),
+        Some(Media::Document(document)) => format!("document:{}", document.id()),
+        _ => String::new(),
     }
 }
 fn media_dimensions(media: Option<&grammers_client::media::Media>) -> (i32, i32) {

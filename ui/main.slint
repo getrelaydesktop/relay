@@ -41,6 +41,7 @@ export struct MessageRow {
     preview-failed: bool,
     photo-width: int,
     photo-height: int,
+    photo-key: string,
     id: int,
     send-token: int,
     receive-token: int,
@@ -315,8 +316,8 @@ component Bubble inherits Rectangle {
     if root.message.reply-to > 0 : Rectangle {
         x: root.left-pad + 8px; y: 6px; width: root.body-width - 16px; height: 38px;
         border-radius: 4px; background: Theme.accent.transparentize(0.9); opacity: root.sending-mix;
-        Rectangle { width: 3px; height: parent.height; background: Theme.accent; border-radius: 1.5px; }
-        Text { x: 9px; y: 1px; width: parent.width - 14px; height: 17px; text: root.message.reply-author != "" ? root.message.reply-author : "Ответ на сообщение"; font-size: 12px; font-weight: 600; color: Theme.accent; overflow: elide; }
+        Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: root.outgoing ? Theme.outgoing-check : Theme.accent; border-radius: 1.5px; }
+        Text { x: 9px; y: 1px; width: parent.width - 14px; height: 17px; text: root.message.reply-author != "" ? root.message.reply-author : "Ответ на сообщение"; font-size: 12px; font-weight: 600; color: root.outgoing ? Theme.outgoing-check : Theme.accent; overflow: elide; }
         Text { x: 9px; y: 18px; width: parent.width - 14px; height: 17px; text: root.message.reply-body != "" ? root.message.reply-body : "Загрузка сообщения…"; font-size: 12px; color: Theme.ink; overflow: elide; }
     }
     if root.message.is-photo : Rectangle {
@@ -489,6 +490,7 @@ export component Desktop inherits Window {
     callback network-events();
     callback preview-file();
     in-out property <bool> window-visible: true;
+    out property <bool> conversation-visible: root.window-visible && root.has-chat && (!root.compact || root.show-chat);
     private property <int> details-generation: 0;
     changed history-scroll-y => { details-scan.restart(); }
     changed window-visible => { details-scan.restart(); }
@@ -990,6 +992,8 @@ export component Desktop inherits Window {
                         spacing: 0px;
                         for message[index] in root.messages : Rectangle {
                             property <int> scanned-generation: -1;
+                            property <string> detail-key: message.photo-key;
+                            changed detail-key => { self.scanned-generation = -1; }
                             // Read row geometry after layout, never while the
                             // repeater is constructing its own layout delegates.
                             Timer {
@@ -997,7 +1001,7 @@ export component Desktop inherits Window {
                                 interval: 1ms;
                                 triggered => {
                                     parent.scanned-generation = root.details-generation;
-                                    if root.window-visible && !root.auth-required && root.has-chat && root.show-chat
+                                    if root.conversation-visible && !root.auth-required
                                         && history-items.y + parent.y + history.viewport-y < history.view-height + 150px
                                         && history-items.y + parent.y + history.viewport-y + parent.height > -150px {
                                         root.request-details(message.id);
