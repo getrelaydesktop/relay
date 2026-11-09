@@ -1,7 +1,5 @@
+import { VectorIcon } from "icons/vector-icons.slint";
 export global Theme {
-    // Original Telegram masks are 3x. Render custom shapes at the same
-    // resolution, retaining smooth edges at 125%, 150% and 200% display scale.
-    out property <int> raster-scale: 3;
     in-out property <int> design: 0;
     in-out property <bool> dark: true;
     in-out property <color> seed: #4266a7;
@@ -50,11 +48,68 @@ export global Theme {
     out property <length> control-radius: material ? 20px : fluent ? 8px : 10px;
     out property <length> bubble-radius: material ? 18px : fluent ? 10px : 6px;
 
-    pure callback render-icon(string, color) -> image;
-    pure callback render-avatar(int, color, color, bool) -> image;
-    pure callback render-pill(int, int, color, color, int) -> image;
-    pure callback render-bubble(int, int, int, int, color, int) -> image;
     pure callback render-qr(string, int, color) -> image;
+}
+
+export component AvatarFill inherits Rectangle {
+    in property <color> top;
+    in property <color> bottom;
+    border-radius: min(self.width, self.height) / 2;
+    background: @linear-gradient(180deg, top 0%, bottom 100%);
+}
+
+// A single continuous outline avoids seams between the body and its tail.
+// Preserve fractional logical coordinates until Skia applies the display scale.
+export component BubbleShape inherits Rectangle {
+    in property <color> fill;
+    in property <length> radius: Theme.bubble-radius;
+    in property <int> tail: 0; // 0 = none, 1 = incoming, 2 = outgoing
+    in property <length> tail-width: 6px;
+    property <float> l: tail == 1 ? tail-width / 1px : 0;
+    property <float> r: (self.width - (tail == 2 ? tail-width : 0px)) / 1px;
+    property <float> h: self.height / 1px;
+    property <float> corner: min(radius / 1px, (r - l) / 2, h / 2);
+    property <float> k: 0.55228475;
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: self.width / 1px;
+        viewbox-height: self.height / 1px;
+        fit: preserve;
+        anti-alias: true;
+        fill: root.fill;
+        MoveTo { x: root.l + root.corner; y: 0; }
+        LineTo { x: root.r - root.corner; y: 0; }
+        CubicTo {
+            control-1-x: root.r - root.corner * (1 - root.k); control-1-y: 0;
+            control-2-x: root.r; control-2-y: root.corner * (1 - root.k);
+            x: root.r; y: root.corner;
+        }
+        LineTo { x: root.r; y: root.h - (root.tail == 2 ? 10 : root.corner); }
+        CubicTo {
+            control-1-x: root.r;
+            control-1-y: root.h - (root.tail == 2 ? 4 : root.corner * (1 - root.k));
+            control-2-x: root.tail == 2 ? root.r + 2 : root.r - root.corner * (1 - root.k);
+            control-2-y: root.h;
+            x: root.tail == 2 ? root.width / 1px : root.r - root.corner;
+            y: root.h;
+        }
+        LineTo { x: root.tail == 1 ? 0 : root.l + root.corner; y: root.h; }
+        CubicTo {
+            control-1-x: root.tail == 1 ? root.l - 2 : root.l + root.corner * (1 - root.k);
+            control-1-y: root.h;
+            control-2-x: root.l;
+            control-2-y: root.h - (root.tail == 1 ? 4 : root.corner * (1 - root.k));
+            x: root.l; y: root.h - (root.tail == 1 ? 10 : root.corner);
+        }
+        LineTo { x: root.l; y: root.corner; }
+        CubicTo {
+            control-1-x: root.l; control-1-y: root.corner * (1 - root.k);
+            control-2-x: root.l + root.corner * (1 - root.k); control-2-y: 0;
+            x: root.l + root.corner; y: 0;
+        }
+        Close { }
+    }
 }
 
 export component ActionButton inherits Rectangle {
@@ -75,19 +130,13 @@ export component ActionButton inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: keyboard;
-    if root.fill-color.alpha > 0 : Image {
+    if root.fill-color.alpha > 0 : Rectangle {
         x: 0px;
         y: 0px;
         width: parent.width;
         height: parent.height;
-        source: Theme.render-bubble(
-            parent.width / 1px,
-            parent.height / 1px,
-            0,
-            Theme.control-radius / 1px,
-            root.fill-color,
-            0
-        );
+        border-radius: Theme.control-radius;
+        background: root.fill-color;
     }
     if root.outlined && !root.primary : Rectangle {
         width: parent.width;
@@ -173,18 +222,15 @@ export component Entry inherits Rectangle {
     accessible-label: placeholder;
     accessible-value: text;
     accessible-action-set-value(value) => { root.text = value; root.edited(); }
-    if !root.plain : Image {
+    if !root.plain : Rectangle {
         x: 0px;
         y: 0px;
         width: parent.width;
         height: parent.height;
-        source: Theme.render-pill(
-            parent.width / 1px,
-            parent.height / 1px,
-            Theme.dark ? #242f3d : #f1f1f1,
-            input.has-focus ? Theme.accent : #00000000,
-            input.has-focus ? 2 : 0
-        );
+        border-radius: self.height / 2;
+        background: Theme.dark ? #242f3d : #f1f1f1;
+        border-color: Theme.accent;
+        border-width: input.has-focus ? 2px : 0px;
     }
     HorizontalLayout {
         width: parent.width;
@@ -219,12 +265,13 @@ export component Entry inherits Rectangle {
         y: (parent.height - 24px) / 2;
         width: 24px;
         height: 24px;
-        Image {
+        VectorIcon {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            width: self.source.width / Theme.raster-scale * 1px;
-            height: self.source.height / Theme.raster-scale * 1px;
-            source: Theme.render-icon("close", clear-hit.has-hover ? Theme.icon-hover-fg : Theme.icon-fg);
+            width: self.natural-width;
+            height: self.natural-height;
+            name: "close";
+            tint: clear-hit.has-hover ? Theme.icon-hover-fg : Theme.icon-fg;
         }
         clear-hit := TouchArea {
             width: parent.width;
@@ -254,15 +301,13 @@ export component IconButton inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: keyboard;
-    Image {
+    VectorIcon {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: self.source.width / Theme.raster-scale * 1px;
-        height: self.source.height / Theme.raster-scale * 1px;
-        source: Theme.render-icon(
-            root.icon,
-            root.active ? Theme.accent : hit.has-hover && root.enabled ? Theme.icon-hover-fg : Theme.icon-fg
-        );
+        width: self.natural-width;
+        height: self.natural-height;
+        name: root.icon;
+        tint: root.active ? Theme.accent : hit.has-hover && root.enabled ? Theme.icon-hover-fg : Theme.icon-fg;
     }
     keyboard := FocusScope {
         width: parent.width;

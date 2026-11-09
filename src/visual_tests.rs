@@ -5,6 +5,38 @@ use slint::platform::{Platform, PlatformError, WindowAdapter, WindowEvent};
 use slint::{LogicalPosition, PhysicalSize, Rgba8Pixel};
 use std::cell::Cell;
 
+slint::slint! {
+    import { VectorIcon } from "../ui/icons/vector-icons.slint";
+    export component IconAtlas inherits Window {
+        background: #17212b;
+        out property <[string]> icons: [
+            "advanced", "back", "call", "channel", "chat-settings", "chats",
+            "clip", "close", "edit-folders", "folder", "groups_create", "language",
+            "maximize", "menu", "mic", "minimize", "moon", "more",
+            "notifications", "panel", "personal", "phone", "power", "privacy",
+            "profile", "read", "saved", "search", "send", "sent",
+            "settings", "smile", "window-close"
+        ];
+        for icon[index] in root.icons: Rectangle {
+            x: mod(index, 6) * 100px;
+            y: floor(index / 6) * 72px;
+            width: 100px;
+            height: 72px;
+            VectorIcon {
+                x: (parent.width - self.width) / 2;
+                y: 6px;
+                name: icon;
+                tint: #9cb6ca;
+            }
+            Text {
+                x: 0px; y: 50px; width: parent.width; height: 20px;
+                text: icon; color: #9cb6ca; font-size: 10px;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}
+
 struct PreviewPlatform(Rc<PreviewWindow>);
 
 struct PreviewWindow {
@@ -108,8 +140,11 @@ fn portable_interface_renders_icons_at_multiple_scales() {
 
     for (name, width, scale, dark, channel) in [
         ("desktop-100", 1100, 1.0, true, false),
+        ("desktop-125", 1100, 1.25, true, false),
         ("desktop-150", 1100, 1.5, true, false),
+        ("desktop-175", 1100, 1.75, true, false),
         ("desktop-200", 1100, 2.0, true, false),
+        ("desktop-300", 1100, 3.0, true, false),
         ("desktop-light", 1100, 1.0, false, false),
         ("channel", 1100, 1.0, true, true),
         ("compact", 430, 1.0, true, false),
@@ -234,4 +269,61 @@ fn portable_interface_renders_icons_at_multiple_scales() {
         }
     }
     ui.hide().unwrap();
+    drop(ui);
+
+    // Check every glyph, including settings and caption icons absent from the
+    // main conversation snapshot. The curved glyphs must retain AA coverage.
+    let atlas = IconAtlas::new().unwrap();
+    atlas.show().unwrap();
+    for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 3.0] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        let width = (600.0 * scale) as u32;
+        let height = (432.0 * scale) as u32;
+        window.window.set_size(PhysicalSize::new(width, height));
+        let pixels = window.take_snapshot().unwrap();
+        let background = Rgba8Pixel {
+            r: 23,
+            g: 33,
+            b: 43,
+            a: 255,
+        };
+        let foreground = Rgba8Pixel {
+            r: 156,
+            g: 182,
+            b: 202,
+            a: 255,
+        };
+        for (index, name) in atlas.get_icons().iter().enumerate() {
+            let left = ((index % 6) as f32 * 100.0 * scale) as u32;
+            let top = ((index / 6) as f32 * 72.0 * scale) as u32;
+            let mut ink = 0;
+            let mut antialiased = 0;
+            for y in top..top + (48.0 * scale) as u32 {
+                for x in left..left + (100.0 * scale) as u32 {
+                    let p = pixels.as_slice()[(y * width + x) as usize];
+                    ink += usize::from(p != background);
+                    antialiased += usize::from(p != background && p != foreground);
+                }
+            }
+            assert!(ink > 0, "missing vector icon {name} at {scale}x");
+            if ["clip", "mic", "search", "smile", "more", "notifications"].contains(&name.as_str())
+            {
+                assert!(antialiased > 0, "aliased curve in {name} at {scale}x");
+            }
+        }
+        if let Some(directory) = std::env::var_os("RELAY_UI_SNAPSHOTS") {
+            image::save_buffer(
+                std::path::Path::new(&directory)
+                    .join(format!("icons-{}.png", (scale * 100.0) as u32)),
+                pixels.as_bytes(),
+                width,
+                height,
+                image::ColorType::Rgba8,
+            )
+            .unwrap();
+        }
+    }
+    atlas.hide().unwrap();
 }

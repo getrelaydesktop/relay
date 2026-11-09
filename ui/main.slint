@@ -1,7 +1,8 @@
+import { VectorIcon } from "icons/vector-icons.slint";
 import { ListView } from "list-view.slint";
 import { AuthScreen } from "auth.slint";
 import { SettingsHome } from "settings-home.slint";
-import { Theme, ActionButton, Entry, IconButton, MenuItem } from "theme.slint";
+import { Theme, ActionButton, Entry, IconButton, MenuItem, AvatarFill, BubbleShape } from "theme.slint";
 import "fonts/OpenSans-Regular.ttf";
 import "fonts/OpenSans-SemiBold.ttf";
 export { Theme } from "theme.slint";
@@ -60,12 +61,21 @@ component Avatar inherits Rectangle {
         image-fit: cover;
         image-rendering: smooth;
     }
-    if !root.has-photo || root.saved : Image {
+    if !root.has-photo || root.saved : AvatarFill {
         x: 0px;
         y: 0px;
         width: parent.width;
         height: parent.height;
-        source: Theme.render-avatar(parent.width / 1px, root.tint-top, root.tint, root.saved);
+        top: root.tint-top;
+        bottom: root.tint;
+    }
+    if root.saved : VectorIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: parent.width * 24 / 46;
+        height: parent.height * 24 / 46;
+        name: "saved";
+        tint: #ffffff;
     }
     if !root.saved && !root.has-photo : Text {
         width: parent.width;
@@ -142,23 +152,19 @@ component ChatTile inherits Rectangle {
         overflow: elide;
         vertical-alignment: center;
     }
-    if root.chat.outgoing && root.chat.channel-access == 0 && root.last-message-read : Image {
+    if root.chat.outgoing && root.chat.channel-access == 0 && root.last-message-read : VectorIcon {
         x: parent.width - 31px - time-label.preferred-width;
         y: 14px;
-        width: self.source.width / Theme.raster-scale * 1px;
-        height: self.source.height / Theme.raster-scale * 1px;
-        source: Theme.render-icon("read", root.selected ? Theme.selected-ink : Theme.outgoing-check);
+        width: self.natural-width;
+        height: self.natural-height;
+        name: "read";
+        tint: root.selected ? Theme.selected-ink : Theme.outgoing-check;
     }
-    if root.chat.outgoing && root.chat.channel-access == 0 && !root.last-message-read : Text {
+    if root.chat.outgoing && root.chat.channel-access == 0 && !root.last-message-read : VectorIcon {
         x: parent.width - 31px - time-label.preferred-width;
-        y: 9px;
-        width: 18px;
-        height: 20px;
-        text: "✓";
-        color: root.selected ? Theme.selected-ink : Theme.outgoing-check;
-        font-size: 13px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+        y: 14px;
+        name: "sent";
+        tint: root.selected ? Theme.selected-ink : Theme.outgoing-check;
     }
     time-label := Text {
         x: parent.width - self.preferred-width - 10px;
@@ -187,18 +193,13 @@ component ChatTile inherits Rectangle {
         y: 34px;
         width: max(20px, unread-text.preferred-width + 12px);
         height: 20px;
-        Image {
+        Rectangle {
             x: 0px;
             y: 0px;
             width: parent.width;
             height: parent.height;
-            source: Theme.render-pill(
-                parent.width / 1px,
-                parent.height / 1px,
-                root.selected ? #ffffff : Theme.accent,
-                #00000000,
-                0
-            );
+            border-radius: self.height / 2;
+            background: root.selected ? #ffffff : Theme.accent;
         }
         unread-text := Text {
             width: parent.width;
@@ -249,19 +250,14 @@ component Bubble inherits Rectangle {
     width: root.body-width + root.tail-width;
     height: max(35px, body.preferred-height + 16px + (single-line ? 0px : 16px));
     background: transparent;
-    Image {
+    BubbleShape {
         x: 0px;
         y: 0px;
         width: parent.width;
         height: parent.height;
-        source: Theme.render-bubble(
-            root.body-width / 1px,
-            parent.height / 1px,
-            root.tail-width / 1px,
-            Theme.bubble-radius / 1px,
-            root.outgoing ? Theme.outgoing : Theme.incoming,
-            root.group-end && Theme.design == 0 ? (root.outgoing ? 2 : 1) : 0
-        );
+        fill: root.outgoing ? Theme.outgoing : Theme.incoming;
+        tail-width: root.tail-width;
+        tail: root.group-end && Theme.design == 0 ? (root.outgoing ? 2 : 1) : 0;
     }
     measure := Text {
         visible: false;
@@ -296,23 +292,19 @@ component Bubble inherits Rectangle {
         horizontal-alignment: right;
         vertical-alignment: center;
     }
-    if root.outgoing && root.is-read : Image {
+    if root.outgoing && root.is-read : VectorIcon {
         x: root.left-pad + root.body-width - 25px;
         y: parent.height - 16px;
-        width: self.source.width / Theme.raster-scale * 1px;
-        height: self.source.height / Theme.raster-scale * 1px;
-        source: Theme.render-icon("read", Theme.outgoing-check);
+        width: self.natural-width;
+        height: self.natural-height;
+        name: "read";
+        tint: Theme.outgoing-check;
     }
-    if root.outgoing && !root.is-read : Text {
+    if root.outgoing && !root.is-read : VectorIcon {
         x: root.left-pad + root.body-width - 25px;
-        y: parent.height - 18px;
-        width: 18px;
-        height: 14px;
-        text: "✓";
-        color: Theme.outgoing-check;
-        font-size: 13px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+        y: parent.height - 16px;
+        name: "sent";
+        tint: Theme.outgoing-check;
     }
     TouchArea {
         width: parent.width; height: parent.height;
@@ -489,12 +481,13 @@ export component Desktop inherits Window {
                 width: 72px;
                 height: 54px;
                 background: rail-menu-hit.has-hover ? #ffffff0d : transparent;
-                Image {
+                VectorIcon {
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
-                    width: self.source.width / Theme.raster-scale * 1px;
-                    height: self.source.height / Theme.raster-scale * 1px;
-                    source: Theme.render-icon("menu", rail-menu-hit.has-hover ? #ffffff : Theme.rail-muted);
+                    width: self.natural-width;
+                    height: self.natural-height;
+                    name: "menu";
+                    tint: rail-menu-hit.has-hover ? #ffffff : Theme.rail-muted;
                 }
                 rail-menu-hit := TouchArea {
                     width: parent.width;
@@ -518,33 +511,28 @@ export component Desktop inherits Window {
                     width: 72px;
                     height: 64px;
                     background: active ? Theme.rail-active : folder-hit.has-hover ? #ffffff0a : transparent;
-                    Image {
+                    VectorIcon {
                         x: (parent.width - self.width) / 2;
                         y: 4px;
-                        width: self.source.width / Theme.raster-scale * 1px;
-                        height: self.source.height / Theme.raster-scale * 1px;
-                        source: Theme.render-icon(
-                            folder.id == 0 ? "chats" : "folder",
-                            active ? Theme.rail-accent : folder-hit.has-hover ? #99aec2 : Theme.rail-muted
-                        );
+                        width: self.natural-width;
+                        height: self.natural-height;
+                        name: folder.id == 0 ? "chats" : "folder";
+                        tint: active ? Theme.rail-accent : folder-hit.has-hover ? #99aec2 : Theme.rail-muted;
                     }
                     if unread > 0 : Rectangle {
                         x: parent.width - self.width - 4px;
                         y: 5px;
                         width: max(18px, badge-lbl.preferred-width + 10px);
                         height: 18px;
-                        Image {
+                        Rectangle {
                             x: 0px;
                             y: 0px;
                             width: parent.width;
                             height: parent.height;
-                            source: Theme.render-pill(
-                                parent.width / 1px,
-                                parent.height / 1px,
-                                active ? Theme.rail-accent : Theme.rail-muted,
-                                active ? Theme.rail-active : Theme.rail,
-                                2
-                            );
+                            border-radius: self.height / 2;
+                            background: active ? Theme.rail-accent : Theme.rail-muted;
+                            border-color: active ? Theme.rail-active : Theme.rail;
+                            border-width: 2px;
                         }
                         badge-lbl := Text {
                             width: parent.width;
@@ -664,12 +652,13 @@ export component Desktop inherits Window {
                 y: (parent.height - self.height) / 2;
                 width: empty-label.preferred-width + 24px;
                 height: 26px;
-                Image {
+                Rectangle {
                     x: 0px;
                     y: 0px;
                     width: parent.width;
                     height: parent.height;
-                    source: Theme.render-pill(parent.width / 1px, parent.height / 1px, Theme.service-bg, #00000000, 0);
+                    border-radius: self.height / 2;
+                    background: Theme.service-bg;
                 }
                 empty-label := Text {
                     width: parent.width;
@@ -789,12 +778,13 @@ export component Desktop inherits Window {
                             y: 12px;
                             width: date-pill.preferred-width + 22px;
                             height: 24px;
-                            Image {
+                            Rectangle {
                                 x: 0px;
                                 y: 0px;
                                 width: parent.width;
                                 height: parent.height;
-                                source: Theme.render-pill(parent.width / 1px, parent.height / 1px, Theme.service-bg, #00000000, 0);
+                                border-radius: self.height / 2;
+                                background: Theme.service-bg;
                             }
                             date-pill := Text {
                                 width: parent.width;
@@ -830,9 +820,10 @@ export component Desktop inherits Window {
                             y: parent.top-offset;
                             width: min(history.width - 32px, service-label.preferred-width + 24px);
                             height: 26px;
-                            Image {
+                            Rectangle {
                                 width: parent.width; height: parent.height;
-                                source: Theme.render-pill(parent.width / 1px, parent.height / 1px, Theme.service-bg, #00000000, 0);
+                                border-radius: self.height / 2;
+                                background: Theme.service-bg;
                             }
                             service-label := Text {
                                 x: 12px; width: parent.width - 24px; height: parent.height;
@@ -1244,15 +1235,13 @@ export component Desktop inherits Window {
             width: 36px;
             height: 26px;
             background: title-hit.has-hover ? (index == 2 ? #e81123 : Theme.titlebar-hover) : transparent;
-            Image {
+            VectorIcon {
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
-                width: self.source.width / Theme.raster-scale * 1px;
-                height: self.source.height / Theme.raster-scale * 1px;
-                source: Theme.render-icon(
-                    index == 0 ? "minimize" : index == 1 ? "maximize" : "window-close",
-                    title-hit.has-hover ? (index == 2 ? #ffffff : Theme.titlebar-hover-fg) : Theme.titlebar-fg
-                );
+                width: self.natural-width;
+                height: self.natural-height;
+                name: index == 0 ? "minimize" : index == 1 ? "maximize" : "window-close";
+                tint: title-hit.has-hover ? (index == 2 ? #ffffff : Theme.titlebar-hover-fg) : Theme.titlebar-fg;
             }
             title-hit := TouchArea {
                 width: parent.width;
@@ -1334,21 +1323,19 @@ export component Desktop inherits Window {
                     height: 1px;
                     background: Theme.border;
                 }
-                Image {
+                VectorIcon {
                     x: 21px;
                     y: (parent.height - self.height) / 2;
-                    width: self.source.width / Theme.raster-scale * 1px;
-                    height: self.source.height / Theme.raster-scale * 1px;
-                    source: Theme.render-icon(
-                        index == 0 ? "profile"
+                    width: self.natural-width;
+                    height: self.natural-height;
+                    name: index == 0 ? "profile"
                         : index == 1 ? "groups_create"
                         : index == 2 ? "channel"
                         : index == 3 ? "personal"
                         : index == 4 ? "phone"
                         : index == 5 ? "saved"
-                        : index == 6 ? "settings" : "moon",
-                        Theme.menu-icon-fg
-                    );
+                        : index == 6 ? "settings" : "moon";
+                    tint: Theme.menu-icon-fg;
                 }
                 Text {
                     x: 64px;
@@ -1365,19 +1352,21 @@ export component Desktop inherits Window {
                     y: 12px;
                     width: 34px;
                     height: 16px;
-                    Image {
+                    Rectangle {
                         x: 0px;
                         y: 0px;
                         width: parent.width;
                         height: parent.height;
-                        source: Theme.render-pill(34, 16, Theme.dark ? Theme.accent : Theme.muted, #00000000, 0);
+                        border-radius: self.height / 2;
+                        background: Theme.dark ? Theme.accent : Theme.muted;
                     }
-                    Image {
+                    Rectangle {
                         x: Theme.dark ? 18px : 2px;
                         y: 1px;
                         width: 14px;
                         height: 14px;
-                        source: Theme.render-pill(14, 14, Theme.surface, #00000000, 0);
+                        border-radius: self.height / 2;
+                        background: Theme.surface;
                     }
                 }
                 menu-hit := TouchArea {
@@ -1430,19 +1419,13 @@ export component Desktop inherits Window {
             height: min(620px, parent.height - 32px);
             background: transparent;
             clip: true;
-            Image {
+            Rectangle {
                 x: 0px;
                 y: 0px;
                 width: parent.width;
                 height: parent.height;
-                source: Theme.render-bubble(
-                    parent.width / 1px,
-                    parent.height / 1px,
-                    0,
-                    Theme.material ? 24 : 8,
-                    Theme.surface,
-                    0
-                );
+                border-radius: Theme.material ? 24px : 8px;
+                background: Theme.surface;
             }
             TouchArea { width: parent.width; height: parent.height; }
             Text {

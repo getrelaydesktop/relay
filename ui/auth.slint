@@ -200,12 +200,13 @@ export component AuthScreen inherits Rectangle {
                 y: 292px + idx * 32px;
                 width: parent.width - 44px;
                 height: 26px;
-                Image {
+                Rectangle {
                     x: 0px;
                     y: 3px;
                     width: 20px;
                     height: 20px;
-                    source: Theme.render-pill(20, 20, Theme.accent, #00000000, 0);
+                    border-radius: self.height / 2;
+                    background: Theme.accent;
                 }
                 Text {
                     x: 0px;

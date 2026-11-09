@@ -774,37 +774,6 @@ fn install_rendering(ui: &Desktop) {
 
     {
         let theme = ui.global::<Theme>();
-        let assets_icon = Rc::clone(&assets);
-        theme.on_render_icon(move |name, color| {
-            assets_icon.borrow_mut().icon(name.as_str(), color, 3.0)
-        });
-        let assets_avatar = Rc::clone(&assets);
-        theme.on_render_avatar(move |size, top, bottom, saved| {
-            assets_avatar
-                .borrow_mut()
-                .avatar(size.max(2) as u32 * 3, top, bottom, saved)
-        });
-        let assets_pill = Rc::clone(&assets);
-        theme.on_render_pill(move |w, h, fill, border, border_px| {
-            assets_pill.borrow_mut().pill(
-                w.max(2) as u32 * 3,
-                h.max(2) as u32 * 3,
-                fill,
-                border,
-                border_px.max(0) as f32 * 3.0,
-            )
-        });
-        let assets_bubble = Rc::clone(&assets);
-        theme.on_render_bubble(move |body_w, h, tail_w, radius, fill, tail_mode| {
-            assets_bubble.borrow_mut().bubble(
-                body_w.max(2) as u32 * 3,
-                h.max(2) as u32 * 3,
-                tail_w.max(0) as u32 * 3,
-                radius.max(0) as u32 * 3,
-                fill,
-                tail_mode.clamp(0, 2) as u8,
-            )
-        });
         let assets_qr = Rc::clone(&assets);
         theme.on_render_qr(move |matrix, size, accent| {
             assets_qr

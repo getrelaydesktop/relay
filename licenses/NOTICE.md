@@ -12,6 +12,12 @@ The original grayscale icon masks were converted to RGBA by using the mask
 intensity as the alpha channel. Glyph dimensions, padding and antialiasing
 were preserved. The icons are tinted by Slint at runtime.
 
+The native paths in ui/icons/vector-icons.slint are derived from those alpha
+masks with tools/vectorize_icons.py. The paths retain their logical dimensions
+and padding and are filled directly by Skia at the current display scale.
+They are reconstructed contours, rather than original SVG artwork. The source
+PNG masks remain available for comparison and regeneration.
+
 Copyright (c) 2014-2026 The Telegram Desktop Authors.
 See Telegram-LEGAL.txt and Telegram-GPL-3.0.txt.
 

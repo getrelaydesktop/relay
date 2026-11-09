@@ -1,4 +1,5 @@
-import { Theme } from "theme.slint";
+import { VectorIcon } from "icons/vector-icons.slint";
+import { Theme, AvatarFill } from "theme.slint";
 
 export component SettingsHome inherits Rectangle {
     in property <string> user-name: "Relay Desktop";
@@ -14,12 +15,13 @@ export component SettingsHome inherits Rectangle {
         y: 10px;
         width: 72px;
         height: 72px;
-        Image {
+        AvatarFill {
             x: 0px;
             y: 0px;
             width: parent.width;
             height: parent.height;
-            source: Theme.render-avatar(72, #72d5fd, #2a9ef1, false);
+            top: #72d5fd;
+            bottom: #2a9ef1;
         }
         Text {
             width: parent.width;
@@ -87,13 +89,12 @@ export component SettingsHome inherits Rectangle {
         width: parent.width;
         height: 40px;
         background: pointer.has-hover ? Theme.hover : transparent;
-        Image {
+        VectorIcon {
             x: 23px;
             y: (parent.height - self.height) / 2;
-            width: self.source.width / Theme.raster-scale * 1px;
-            height: self.source.height / Theme.raster-scale * 1px;
-            source: Theme.render-icon(
-                index == 0 ? "profile"
+            width: self.natural-width;
+            height: self.natural-height;
+            name: index == 0 ? "profile"
                 : index == 1 ? "notifications"
                 : index == 2 ? "privacy"
                 : index == 3 ? "chat-settings"
@@ -102,9 +103,8 @@ export component SettingsHome inherits Rectangle {
                 : index == 6 ? "phone"
                 : index == 7 ? "power"
                 : index == 8 ? "language"
-                : "close",
-                index == 9 ? #ef5b5b : Theme.menu-icon-fg
-            );
+                : "close";
+            tint: index == 9 ? #ef5b5b : Theme.menu-icon-fg;
         }
         Text {
             x: 64px;
