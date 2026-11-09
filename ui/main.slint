@@ -843,6 +843,7 @@ export component Desktop inherits Window {
                     width: parent.width - 134px;
                     height: 40px;
                     text <=> root.draft;
+                    placeholder-visible: !root.follow-sending;
                     visible: root.chat-can-write;
                     read-only: root.message-busy && !root.text-send-pending;
                     placeholder: root.edit-message-id > 0 ? "Edit message..." : root.reply-message > 0 ? "Reply..." : root.active-chat.channel-access == 2 ? "Опубликовать запись…" : "Write a message...";
@@ -932,18 +933,22 @@ export component Desktop inherits Window {
                                 x: (parent.width - self.width) / 2;
                                 y: 12px;
                                 width: date-pill.preferred-width + 22px;
-                                height: 24px;
+                                // Only the flying bubble enters the composer;
+                                // date labels remain inside the history band.
+                                height: min(24px, max(0px, history.view-height
+                                    - (history-items.y + parent.y + history.viewport-y + 12px)));
+                                clip: true;
                                 Rectangle {
                                     x: 0px;
                                     y: 0px;
                                     width: parent.width;
-                                    height: parent.height;
+                                    height: 24px;
                                     border-radius: self.height / 2;
                                     background: Theme.service-bg;
                                 }
                                 date-pill := Text {
                                     width: parent.width;
-                                    height: parent.height;
+                                    height: 24px;
                                     text: message.date != "" ? message.date : "Demo";
                                     color: Theme.service-fg;
                                     font-size: 13px;

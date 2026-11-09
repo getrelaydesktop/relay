@@ -309,7 +309,7 @@ impl Demo {
             });
             ui.set_text_send_pending(true);
             ui.set_message_busy(true);
-            ui.set_network_status("Отправка…".into());
+            ui.set_network_status(Default::default());
             self.bridge.send_message(peer_id, body, reply);
         }
     }
@@ -341,7 +341,7 @@ impl Demo {
         self.pending_send = Some(sending::PendingSend { peer_id, local_id });
         ui.set_text_send_pending(true);
         ui.set_message_busy(true);
-        ui.set_network_status("Отправка…".into());
+        ui.set_network_status(Default::default());
         self.bridge.send_message(peer_id, &body, reply);
     }
 

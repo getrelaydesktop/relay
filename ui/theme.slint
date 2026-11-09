@@ -234,6 +234,7 @@ export component MenuItem inherits Rectangle {
 }
 
 export component Entry inherits Rectangle {
+    in property <bool> placeholder-visible: true;
     in property <bool> read-only: false;
     in-out property <string> text;
     in property <string> placeholder;
@@ -276,7 +277,7 @@ export component Entry inherits Rectangle {
             accepted => { root.accepted(); }
         }
     }
-    if root.text == "" : Text {
+    if root.text == "" && root.placeholder-visible : Text {
         x: root.plain ? 6px : 15px;
         width: parent.width - 28px;
         height: parent.height;
