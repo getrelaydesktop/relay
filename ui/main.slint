@@ -639,7 +639,7 @@ export component Desktop inherits Window {
                     row-index: index;
                     list-viewport-y: chat-list.viewport-y;
                     list-height: chat-list.height;
-                    list-visible: !root.auth-required && (!root.compact || !root.show-chat) && !root.forward-open;
+                    list-visible: !root.auth-required && (!root.compact || root.compact-progress < 1) && !root.forward-open;
                     selected: root.has-chat && chat.id == root.active-chat.id;
                     avatar-requested(id) => { root.request-avatar(id); }
                     opened => { root.chat-menu-open = false; root.open-chat(chat.id); }
@@ -1421,7 +1421,7 @@ export component Desktop inherits Window {
                     width: parent.width;
                     height: parent.height;
                     mouse-cursor: index >= 5 || index == 0 ? MouseCursor.pointer : MouseCursor.default;
-                    enabled: index >= 5 || index == 0;
+                    enabled: root.menu-open && (index >= 5 || index == 0);
                     clicked => {
                         if index == 7 {
                             Theme.dark = !Theme.dark;
@@ -1526,12 +1526,23 @@ export component Desktop inherits Window {
                 }
             }
             Rectangle {
+                y: 54px; width: parent.width; height: parent.height - 54px;
+                background: #0000003c;
+                opacity: root.settings-page-progress;
+                visible: root.settings-page-progress > 0 && root.settings-page-progress < 1;
+            }
+            Rectangle {
                 x: parent.width * (1 - root.settings-page-progress);
                 y: 54px;
                 width: parent.width;
                 height: parent.height - 54px;
                 visible: root.settings-page-progress > 0;
                 background: Theme.surface;
+                Rectangle {
+                    x: -12px; width: 12px; height: parent.height;
+                    background: @linear-gradient(90deg, #00000000, #00000040);
+                    opacity: root.settings-page-progress;
+                }
                 Text {
                     x: 22px;
                     y: 14px;
@@ -1621,7 +1632,7 @@ export component Desktop inherits Window {
                     wrap: word-wrap;
                 }
             }
-            if root.settings-page-progress > 0 && root.settings-page-progress < 1 : TouchArea {
+            if !root.settings-open || (root.settings-page-progress > 0 && root.settings-page-progress < 1) : TouchArea {
                 width: parent.width; height: parent.height;
             }
         }
