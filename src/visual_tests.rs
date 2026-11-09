@@ -423,6 +423,15 @@ fn portable_interface_renders_icons_at_multiple_scales() {
         "the second wave must expand from the new pointer location"
     );
     save_animation_frame("ripple-overlap", &pixels);
+    assert_eq!(
+        pixels.as_slice()[21 * 240 + 21].r,
+        0,
+        "ripples must respect the rounded mask at the top-left corner"
+    );
+    assert!(
+        pixels.as_slice()[28 * 240 + 28].r > 0,
+        "the rounded mask must preserve coverage inside its arc"
+    );
     window.advance(200);
     window.take_snapshot().unwrap();
     assert_eq!(

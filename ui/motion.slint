@@ -125,6 +125,9 @@ export component RippleSurface inherits Rectangle {
     private property <[int]> waves;
     private property <int> generation: 0;
     out property <int> active-waves: waves.length;
+    // Slint's clip lowering only copies an explicit radius binding from the
+    // component root; callers override this default for rounded/circular masks.
+    border-radius: 0px;
     clip: true;
     changed pressed => {
         if root.pressed {
