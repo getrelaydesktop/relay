@@ -56,6 +56,14 @@ export global Theme {
     pure callback render-qr(string, int, color) -> image;
 }
 
+export component SendingClock inherits Rectangle {
+    in property <color> tint: Theme.muted;
+    width: 10px; height: 10px;
+    border-radius: 5px; border-width: 1px; border-color: root.tint;
+    Rectangle { x: 4px; y: 2px; width: 1px; height: 3px; background: root.tint; }
+    Rectangle { x: 4px; y: 4px; width: 3px; height: 1px; background: root.tint; }
+}
+
 export component AvatarFill inherits Rectangle {
     in property <color> top;
     in property <color> bottom;

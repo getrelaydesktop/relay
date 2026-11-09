@@ -5,6 +5,8 @@ export global TelegramMotion {
     // Appending to a persistent model retains live wave delegates and clocks.
     callback append-ripple([int], int) -> [int];
     callback remove-ripple([int], int);
+    callback claim-send(int) -> bool;
+    out property <duration> send-duration: 280ms;
     out property <duration> box-duration: 200ms;
     out property <duration> slide-duration: 240ms;
     out property <length> slide-shift: 100px;
@@ -47,7 +49,7 @@ export component Motion inherits Rectangle {
     height: 0px;
     animate clock {
         duration: TelegramMotion.enabled ? root.duration : 0ms;
-        easing: linear;
+        easing: root.active-curve == 5 ? cubic-bezier(0.25, 0.1, 0.25, 1) : linear;
     }
     init => {
         root.from = root.target;
@@ -65,6 +67,32 @@ export component Motion inherits Rectangle {
         root.active-curve = root.curve;
         root.clock-start = root.clock;
         root.clock-target += 1;
+    }
+}
+
+// MessageSendingTextFlight: linear 280ms timeline, horizontal easeOutQuint
+// over 160ms, vertical CubicBezier(.25,.1,.25,1), and a 110ms bubble mix.
+export component MessageSendMotion inherits Rectangle {
+    in property <int> token;
+    out property <float> progress: timeline.value;
+    out property <float> horizontal: TelegramMotion.curve(3, progress * 280 / 160);
+    out property <float> rise: vertical.value;
+    out property <float> mix: min(1, progress * 280 / 110);
+    timeline := Motion { target: 1; duration: TelegramMotion.send-duration; }
+    vertical := Motion { target: 1; duration: TelegramMotion.send-duration; curve: 5; }
+    width: 0px; height: 0px;
+    init => { root.play(); }
+    changed token => {
+        if root.token == 0 {
+            timeline.restart(1, 1);
+            vertical.restart(1, 1);
+        } else { root.play(); }
+    }
+    function play() {
+        if root.token != 0 && TelegramMotion.claim-send(root.token) && TelegramMotion.enabled {
+            timeline.restart(0, 1);
+            vertical.restart(0, 1);
+        }
     }
 }
 

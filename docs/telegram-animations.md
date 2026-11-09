@@ -18,6 +18,7 @@ Relay. It does not add Telegram's missing screens or animated media assets.
 | Night mode toggle | Linear position/color, 120 ms | lib_ui `ui/widgets/checkbox.cpp`, `ui/basic.style` |
 | Press ripples | Pointer origin, furthest-corner radius, 650 ms `easeOutQuint` expansion, linear 200 ms release fade; overlapping presses preserved | lib_ui `ui/effects/ripple_animation.cpp`, `ui/widgets/widgets.style` |
 | Auth input stroke | Linear color transition, 150 ms | lib_ui `ui/widgets/widgets.style` |
+| Sending text | 280 ms linear timeline; horizontal `easeOutQuint` over 160 ms; vertical cubic bezier `(0.25, 0.1, 0.25, 1)`; bubble mix over 110 ms; history reveal follows vertical progress | tdesktop `Telegram/SourceFiles/ui/effects/message_sending_text_flight.cpp`, `message_sending_history.cpp` |
 
 ## Timing and rendering
 
@@ -46,6 +47,17 @@ In particular, the docked emoji section relayouts the live conversation as it
 opens; Telegram can animate cached section snapshots. Source timings and curves
 alone do not guarantee identical pixels for every screen.
 
+Text sending starts when the user sends, before the network response. A local
+pending row becomes the acknowledged server row, retaining its animation token.
+History refreshes and duplicate server updates do not replay the flight. Failed
+text stays available in the bubble; clicking it retries with its original reply
+target. A response does not erase the next draft already typed in the composer.
+
+The text-flight port uses live Skia text and bubble geometry. Telegram's captured
+QTextEdit images, rich text morphing and media sending animations are not reused.
+The flight is clipped to Relay's history viewport, including at its boundary
+with the composer. These differences affect its first frames and complex text.
+
 ## Verification
 
 `src/visual_tests.rs` drives a deterministic clock through the actual Skia
@@ -53,5 +65,9 @@ renderer. It checks mid-animation golden values, reversing the menu while it is
 moving, reopening it, the shared menu-to-settings dim, settings pages, compact
 navigation, intro timing, toggle timing, popup geometry/alpha/reopening and
 ripple origin/clipping/cleanup.
+Sending checks cover intermediate timeline/position/mix values, immediate local
+insertion, preserving a new draft on acknowledgment, server echo deduplication,
+failure/retry, and keeping the reply target. The bridge is an offline in-memory
+test double; these checks do not open sessions or send any Telegram messages.
 The Windows debug CI job also exports intermediate animation PNGs alongside the
 existing static previews and icon atlas at 100–300% display scaling.

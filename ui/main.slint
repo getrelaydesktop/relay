@@ -1,9 +1,9 @@
 import { VectorIcon } from "icons/vector-icons.slint";
-import { TelegramMotion, Motion, PopupReveal, BoxOverlay, RippleSurface } from "motion.slint";
+import { TelegramMotion, Motion, MessageSendMotion, PopupReveal, BoxOverlay, RippleSurface } from "motion.slint";
 import { ListView } from "list-view.slint";
 import { AuthScreen } from "auth.slint";
 import { SettingsHome } from "settings-home.slint";
-import { Theme, ActionButton, Entry, IconButton, MenuItem, AvatarFill, BubbleShape } from "theme.slint";
+import { Theme, ActionButton, Entry, IconButton, MenuItem, AvatarFill, BubbleShape, SendingClock } from "theme.slint";
 import "fonts/OpenSans-Regular.ttf";
 import "fonts/OpenSans-SemiBold.ttf";
 export { Theme } from "theme.slint";
@@ -29,6 +29,10 @@ export struct ChatRow {
 
 export struct MessageRow {
     id: int,
+    send-token: int,
+    pending: bool,
+    failed: bool,
+    reply-to: int,
     date: string,
     has-media: bool,
     is-photo: bool,
@@ -165,7 +169,7 @@ component ChatTile inherits Rectangle {
         overflow: elide;
         vertical-alignment: center;
     }
-    if root.chat.outgoing && root.chat.channel-access == 0 && root.last-message-read : VectorIcon {
+    if root.chat.outgoing && root.chat.channel-access == 0 && root.chat.last-message-id >= 0 && root.last-message-read : VectorIcon {
         x: parent.width - 31px - time-label.preferred-width;
         y: 14px;
         width: self.natural-width;
@@ -173,11 +177,15 @@ component ChatTile inherits Rectangle {
         name: "read";
         tint: root.selected ? Theme.selected-ink : Theme.outgoing-check;
     }
-    if root.chat.outgoing && root.chat.channel-access == 0 && !root.last-message-read : VectorIcon {
+    if root.chat.outgoing && root.chat.channel-access == 0 && root.chat.last-message-id >= 0 && !root.last-message-read : VectorIcon {
         x: parent.width - 31px - time-label.preferred-width;
         y: 14px;
         name: "sent";
         tint: root.selected ? Theme.selected-ink : Theme.outgoing-check;
+    }
+    if root.chat.outgoing && root.chat.channel-access == 0 && root.chat.last-message-id < 0 : SendingClock {
+        x: parent.width - 60px; y: 19px;
+        tint: root.selected ? Theme.selected-ink : Theme.muted;
     }
     time-label := Text {
         x: parent.width - self.preferred-width - 10px;
@@ -247,6 +255,8 @@ component ChatTile inherits Rectangle {
 component Bubble inherits Rectangle {
     callback selected();
     callback photo-requested();
+    callback retry-requested();
+    in property <float> sending-mix: 1;
     in property <MessageRow> message;
     in property <bool> is-read;
     in property <length> available-width;
@@ -264,6 +274,7 @@ component Bubble inherits Rectangle {
     height: max(35px, body.preferred-height + 16px + (single-line ? 0px : 16px));
     background: transparent;
     BubbleShape {
+        opacity: root.sending-mix;
         x: 0px;
         y: 0px;
         width: parent.width;
@@ -296,6 +307,7 @@ component Bubble inherits Rectangle {
     }
     Text {
         x: root.left-pad + root.body-width - root.date-width - 9px;
+        opacity: root.sending-mix;
         y: parent.height - 21px;
         width: date-measure.preferred-width;
         height: 18px;
@@ -305,7 +317,8 @@ component Bubble inherits Rectangle {
         horizontal-alignment: right;
         vertical-alignment: center;
     }
-    if root.outgoing && root.is-read : VectorIcon {
+    if root.outgoing && !root.message.pending && !root.message.failed && root.is-read : VectorIcon {
+        opacity: root.sending-mix;
         x: root.left-pad + root.body-width - 25px;
         y: parent.height - 16px;
         width: self.natural-width;
@@ -313,21 +326,35 @@ component Bubble inherits Rectangle {
         name: "read";
         tint: Theme.outgoing-check;
     }
-    if root.outgoing && !root.is-read : VectorIcon {
+    if root.outgoing && !root.message.pending && !root.message.failed && !root.is-read : VectorIcon {
+        opacity: root.sending-mix;
         x: root.left-pad + root.body-width - 25px;
         y: parent.height - 16px;
         name: "sent";
         tint: Theme.outgoing-check;
     }
+    if root.outgoing && root.message.pending : SendingClock {
+        x: root.left-pad + root.body-width - 24px;
+        y: parent.height - 18px;
+        opacity: root.sending-mix;
+        tint: Theme.outgoing-muted;
+    }
+    if root.message.failed : Text {
+        x: root.body-width - 25px; y: parent.height - 22px;
+        text: "!"; color: #e85d5d; font-size: 16px; font-weight: 600;
+    }
     TouchArea {
         width: parent.width; height: parent.height;
-        mouse-cursor: root.message.is-photo ? MouseCursor.pointer : MouseCursor.default;
+        mouse-cursor: root.message.is-photo || root.message.failed ? MouseCursor.pointer : MouseCursor.default;
         pointer-event(event) => {
             if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
                 root.selected();
             }
         }
-        clicked => { if root.message.is-photo { root.photo-requested(); } }
+        clicked => {
+            if root.message.failed { root.retry-requested(); }
+            else if root.message.is-photo { root.photo-requested(); }
+        }
     }
 }
 
@@ -375,6 +402,7 @@ export component Desktop inherits Window {
     in-out property <string> auth-delivery: "";
     in-out property <bool> connected: false;
     in-out property <bool> message-busy: false;
+    in-out property <bool> text-send-pending: false;
     in-out property <string> network-status: "";
     in-out property <int> selected-message: 0;
     in-out property <bool> selected-outgoing: false;
@@ -412,6 +440,7 @@ export component Desktop inherits Window {
     callback join-channel();
     property <bool> chat-can-write: root.active-chat.channel-access == 0 || root.active-chat.channel-access == 2;
     callback send-message();
+    callback retry-message(int);
     callback send-file();
     callback message-action(string);
     callback load-older();
@@ -791,6 +820,9 @@ export component Desktop inherits Window {
                 visible: root.has-chat;
                 viewport-width: self.width;
                 viewport-height: max(self.height, history-items.preferred-height);
+                changed viewport-height => {
+                    if root.follow-sending { root.scroll-to-bottom(); }
+                }
                 history-items := VerticalLayout {
                     width: history.width;
                     height: self.preferred-height;
@@ -798,15 +830,20 @@ export component Desktop inherits Window {
                     padding: 0px;
                     spacing: 0px;
                     for message[index] in root.messages : Rectangle {
+                        sending := MessageSendMotion { token: message.send-token; }
                         property <bool> date-start: index == 0 || root.messages[index - 1].date != message.date;
                         property <bool> group-start: date-start || root.messages[index - 1].outgoing != message.outgoing || root.messages[index - 1].service;
                         property <bool> group-end: index + 1 == root.messages.length || root.messages[index + 1].outgoing != message.outgoing || root.messages[index + 1].date != message.date || root.messages[index + 1].service;
                         property <length> top-offset: date-start ? 40px : (group-start ? 6px : 0px);
                         property <length> bottom-pad: index + 1 == root.messages.length ? 8px : 2px;
                         property <length> edge-pad: group-end && Theme.design == 0 ? 10px : 16px;
+                        property <length> final-height: (message.service ? 28px : bubble.height) + top-offset + bottom-pad;
+                        property <length> hidden-height: final-height * (1 - sending.rise);
+                        property <length> final-y: history-items.y + self.y + history.viewport-y + top-offset - hidden-height;
                         width: history.width;
-                        height: (message.service ? 28px : bubble.height) + top-offset + bottom-pad;
+                        height: final-height - hidden-height;
                         if date-start : Rectangle {
+                            opacity: sending.mix;
                             x: (parent.width - self.width) / 2;
                             y: 12px;
                             width: date-pill.preferred-width + 22px;
@@ -832,14 +869,20 @@ export component Desktop inherits Window {
                         }
                         bubble := Bubble {
                             visible: !message.service;
-                            x: self.outgoing ? parent.width - self.width - parent.edge-pad : parent.edge-pad;
-                            y: parent.top-offset;
+                            property <length> final-x: self.outgoing ? parent.width - self.width - parent.edge-pad : parent.edge-pad;
+                            // Entry's plain text starts at x=52px and y=14px
+                            // in the composer. Account for the bubble's text padding.
+                            x: final-x + (41px - final-x) * (1 - sending.horizontal);
+                            y: parent.top-offset - parent.hidden-height
+                                + (history.height + 6px - parent.final-y) * (1 - sending.rise);
+                            sending-mix: sending.mix;
                             message: message;
-                            is-read: root.active-chat.id == 3 || message.id <= root.active-chat.read-outbox-max-id;
+                            is-read: root.active-chat.id == 3 || (message.id > 0 && message.id <= root.active-chat.read-outbox-max-id);
                             group-start: parent.group-start;
                             group-end: parent.group-end;
                             available-width: min(430px, history.width - 48px);
                             photo-requested => { root.view-photo(message.id); }
+                            retry-requested => { root.retry-message(message.id); }
                             selected => {
                                 root.selected-message = message.id;
                                 root.selected-body = message.body;
@@ -912,7 +955,7 @@ export component Desktop inherits Window {
                     height: 40px;
                     text <=> root.draft;
                     visible: root.chat-can-write;
-                    read-only: root.message-busy;
+                    read-only: root.message-busy && !root.text-send-pending;
                     placeholder: root.edit-message-id > 0 ? "Edit message..." : root.reply-message > 0 ? "Reply..." : root.active-chat.channel-access == 2 ? "Опубликовать запись…" : "Write a message...";
                     plain: Theme.design == 0;
                     accepted => { root.send-message(); }
@@ -1652,6 +1695,16 @@ export component Desktop inherits Window {
     }
 
     public function focus-composer() { composer.focus(); }
+    private property <bool> follow-sending: false;
+    follow-timer := Timer {
+        running: root.follow-sending;
+        interval: TelegramMotion.send-duration;
+        triggered => { root.follow-sending = false; }
+    }
+    public function animate-sent-message() {
+        root.follow-sending = true;
+        follow-timer.restart();
+    }
     public function focus-photo() { root.zoom-photo(1); }
     function zoom-photo(factor: float) {
         root.photo-zoom = factor;

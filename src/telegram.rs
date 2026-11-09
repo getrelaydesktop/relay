@@ -168,7 +168,7 @@ pub enum TgEvent {
         message: String,
     },
 }
-enum TgCommand {
+pub(crate) enum TgCommand {
     StartQr,
     CancelQr,
     SendCode(String),
@@ -196,6 +196,25 @@ pub struct TelegramBridge {
     errors: mpsc::Sender<TgEvent>,
 }
 impl TelegramBridge {
+    #[cfg(test)]
+    pub fn offline_for_rendering() -> (
+        Self,
+        async_mpsc::UnboundedReceiver<TgCommand>,
+        mpsc::Sender<TgEvent>,
+    ) {
+        let (errors, events) = mpsc::channel();
+        let (commands, receiver) = async_mpsc::unbounded_channel();
+        (
+            Self {
+                commands,
+                events,
+                errors: errors.clone(),
+            },
+            receiver,
+            errors,
+        )
+    }
+
     pub fn spawn() -> Self {
         let (tx, events) = mpsc::channel();
         let (commands, rx) = async_mpsc::unbounded_channel();

@@ -8,13 +8,19 @@ use std::cell::Cell;
 mod probes {
     slint::slint! {
         import { VectorIcon } from "../ui/icons/vector-icons.slint";
-        import { Motion, RippleSurface, PopupReveal } from "../ui/motion.slint";
+        import { Motion, MessageSendMotion, RippleSurface, PopupReveal } from "../ui/motion.slint";
         export { TelegramMotion } from "../ui/motion.slint";
         export component AnimationProbe inherits Window {
             background: #000000;
             in-out property <bool> pressed;
             in-out property <length> press-x: 8px;
             in-out property <bool> popup-open;
+            in-out property <int> send-token;
+            out property <float> send-progress: send.progress;
+            out property <float> send-horizontal: send.horizontal;
+            out property <float> send-rise: send.rise;
+            out property <float> send-mix: send.mix;
+            send := MessageSendMotion { token: root.send-token; }
             out property <float> toggle-progress: toggle.value;
             out property <int> active-waves: ripple.active-waves;
             out property <float> popup-progress: popup.show-progress;
@@ -314,6 +320,7 @@ fn portable_interface_renders_icons_at_multiple_scales() {
         }
     }
     verify_telegram_motion(&window, &ui);
+    verify_sending(&window, &ui);
     ui.hide().unwrap();
     drop(ui);
 
@@ -375,6 +382,9 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     drop(atlas);
 
     let probe = AnimationProbe::new().unwrap();
+    probe
+        .global::<probes::TelegramMotion>()
+        .on_claim_send(|_| true);
     probe
         .global::<probes::TelegramMotion>()
         .on_append_ripple(append_ripple);
@@ -482,7 +492,141 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     window.take_snapshot().unwrap();
     assert_eq!(probe.get_popup_progress(), 1.0);
     assert_eq!(probe.get_popup_opacity(), 1.0);
+    probe.set_send_token(-1001);
+    window.advance(0);
+    window.take_snapshot().unwrap();
+    window.advance(40);
+    window.take_snapshot().unwrap();
+    assert!((probe.get_send_progress() - 1.0 / 7.0).abs() < 0.002);
+    assert!((probe.get_send_horizontal() - 0.7626953).abs() < 0.002);
+    assert!((probe.get_send_mix() - 40.0 / 110.0).abs() < 0.002);
+    window.advance(100);
+    window.take_snapshot().unwrap();
+    assert!(
+        (probe.get_send_rise() - 0.8024034).abs() < 0.002,
+        "sending rise must use Telegram's cubic bezier"
+    );
+    window.advance(140);
+    window.take_snapshot().unwrap();
+    assert_eq!(probe.get_send_progress(), 1.0);
+    assert_eq!(probe.get_send_rise(), 1.0);
     probe.hide().unwrap();
+}
+
+fn verify_sending(window: &PreviewWindow, ui: &Desktop) {
+    let (bridge, mut commands, events) = telegram::TelegramBridge::offline_for_rendering();
+    let mut state = Demo::with_bridge(bridge);
+    state.live_mode = true;
+    let today: slint::SharedString = chrono::Local::now().format("%d.%m.%Y").to_string().into();
+    for chat in &state.chats {
+        for index in 0..chat.messages.row_count() {
+            let mut row = chat.messages.row_data(index).unwrap();
+            row.id = index as i32 + 1;
+            row.date = today.clone();
+            chat.messages.set_row_data(index, row);
+        }
+    }
+    ui.set_auth_required(false);
+    ui.set_settings_open(false);
+    window.window.set_size(PhysicalSize::new(1100, 720));
+    state.refresh_chats(ui);
+    state.refresh_history(ui);
+    window.advance(0);
+    window.take_snapshot().unwrap();
+    window.advance(500);
+    window.take_snapshot().unwrap();
+    let before = state.chats[0].messages.row_count();
+    ui.set_draft("Текст плавно перелетает из поля ввода в сообщение".into());
+    ui.set_reply_message(42);
+    state.send(ui);
+    assert!(
+        ui.get_draft().is_empty(),
+        "the composer must clear before any response"
+    );
+    assert_eq!(state.chats[0].messages.row_count(), before + 1);
+    assert!(state.chats[0].messages.row_data(before).unwrap().pending);
+    assert!(matches!(
+        commands.try_recv().unwrap(),
+        telegram::TgCommand::SendMessage(0, _, Some(42))
+    ));
+    window.advance(0);
+    window.take_snapshot().unwrap();
+    window.advance(40);
+    save_animation_frame("send-40", &window.take_snapshot().unwrap());
+    window.advance(70);
+    save_animation_frame("send-110", &window.take_snapshot().unwrap());
+    window.advance(170);
+    save_animation_frame("send-280", &window.take_snapshot().unwrap());
+
+    // A server response updates the existing bubble and preserves a new draft.
+    ui.set_draft("Следующее сообщение".into());
+    let body = state.chats[0]
+        .messages
+        .row_data(before)
+        .unwrap()
+        .body
+        .to_string();
+    let server = telegram::TgMessage {
+        id: 91,
+        date: today.to_string(),
+        has_media: false,
+        is_photo: false,
+        body,
+        time: "12:30".into(),
+        outgoing: true,
+        channel_post: false,
+        service: false,
+    };
+    events
+        .send(telegram::TgEvent::MessageSent {
+            peer_id: 0,
+            message: server.clone(),
+        })
+        .unwrap();
+    events
+        .send(telegram::TgEvent::NewMessage {
+            peer_id: 0,
+            message: server,
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    assert_eq!(ui.get_draft(), "Следующее сообщение");
+    assert_eq!(state.chats[0].messages.row_count(), before + 1);
+    let sent = state.chats[0].messages.row_data(before).unwrap();
+    assert_eq!(sent.id, 91);
+    assert!(!sent.pending);
+    assert!(
+        !ui.global::<TelegramMotion>()
+            .invoke_claim_send(sent.send_token),
+        "acknowledgments and history refresh must not replay a completed send"
+    );
+
+    // Keep failed text in its bubble; retry the same row and reply target.
+    ui.set_reply_message(53);
+    state.send(ui);
+    commands.try_recv().unwrap();
+    events
+        .send(telegram::TgEvent::SendFailed {
+            message: "Offline test".into(),
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    let failed = state.chats[0].messages.row_data(before + 1).unwrap();
+    assert!(failed.failed && !failed.pending);
+    assert_eq!(failed.body, "Следующее сообщение");
+    state.retry_send(ui, failed.id);
+    assert_eq!(state.chats[0].messages.row_count(), before + 2);
+    assert!(matches!(
+        commands.try_recv().unwrap(),
+        telegram::TgCommand::SendMessage(0, _, Some(53))
+    ));
+    assert!(
+        state.chats[0]
+            .messages
+            .row_data(before + 1)
+            .unwrap()
+            .pending
+    );
 }
 
 fn save_animation_frame(name: &str, pixels: &slint::SharedPixelBuffer<Rgba8Pixel>) {

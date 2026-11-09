@@ -9,6 +9,7 @@ slint::include_modules!();
 mod preferences;
 mod qr;
 mod render_assets;
+mod sending;
 mod telegram;
 #[cfg(test)]
 mod visual_tests;
@@ -38,6 +39,8 @@ struct Demo {
     folders: Vec<telegram::TgFolder>,
     viewed_photo: Option<(i32, i32)>,
     live_mode: bool,
+    next_local_id: i32,
+    pending_send: Option<sending::PendingSend>,
     bridge: telegram::TelegramBridge,
 }
 
@@ -66,6 +69,10 @@ impl Demo {
         self.bridge.view_photo(peer_id, mid);
     }
     fn new() -> Self {
+        Self::with_bridge(telegram::TelegramBridge::spawn())
+    }
+
+    fn with_bridge(bridge: telegram::TelegramBridge) -> Self {
         Self {
             chats: Self::demo_chats(),
             chat_model: Rc::new(VecModel::default()),
@@ -75,7 +82,9 @@ impl Demo {
             folders: vec![],
             viewed_photo: None,
             live_mode: false,
-            bridge: telegram::TelegramBridge::spawn(),
+            next_local_id: -1,
+            pending_send: None,
+            bridge,
         }
     }
 
@@ -264,29 +273,76 @@ impl Demo {
         if matches!(self.chats[idx].row.channel_access, 1 | 3) {
             return;
         }
-        if self.live_mode {
+        if self.live_mode && ui.get_edit_message_id() > 0 {
             ui.set_message_busy(true);
             ui.set_network_status("Отправка…".into());
-            if ui.get_edit_message_id() > 0 {
-                self.bridge.edit(peer_id, ui.get_edit_message_id(), body);
-            } else {
-                self.bridge.send_message(
-                    peer_id,
-                    body,
-                    (ui.get_reply_message() > 0).then(|| ui.get_reply_message()),
-                );
-            }
+            self.bridge.edit(peer_id, ui.get_edit_message_id(), body);
             return;
         }
+        let token = self.next_local_id;
+        self.next_local_id -= 1;
+        let reply = (ui.get_reply_message() > 0).then(|| ui.get_reply_message());
+        let now = chrono::Local::now();
+        let mut row = message(body, &now.format("%H:%M").to_string(), true);
+        row.id = if self.live_mode { token } else { -token };
+        row.date = now.format("%d.%m.%Y").to_string().into();
+        row.send_token = token;
+        row.reply_to = reply.unwrap_or_default();
+        row.pending = self.live_mode;
+        row.channel_post = self.chats[idx].row.channel_access == 2;
         let chat = &mut self.chats[idx];
-        chat.messages.push(message(body, "сейчас", true));
+        chat.row.last_message_id = row.id;
+        chat.row.time = row.time.clone();
+        chat.messages.push(row);
         chat.row.preview = body.into();
-        chat.row.time = "сейчас".into();
         chat.row.outgoing = true;
         chat.draft = Default::default();
         ui.set_draft(Default::default());
+        ui.set_reply_message(0);
+        ui.invoke_animate_sent_message();
         self.refresh_chats(ui);
         self.refresh_history(ui);
+        if self.live_mode {
+            self.pending_send = Some(sending::PendingSend {
+                peer_id,
+                local_id: token,
+            });
+            ui.set_text_send_pending(true);
+            ui.set_message_busy(true);
+            ui.set_network_status("Отправка…".into());
+            self.bridge.send_message(peer_id, body, reply);
+        }
+    }
+
+    fn retry_send(&mut self, ui: &Desktop, local_id: i32) {
+        if !self.live_mode || ui.get_message_busy() {
+            return;
+        }
+        let Some(chat) = self.chats.get(self.active) else {
+            return;
+        };
+        if matches!(chat.row.channel_access, 1 | 3) {
+            return;
+        }
+        let Some(index) = chat
+            .messages
+            .iter()
+            .position(|row| row.id == local_id && row.failed)
+        else {
+            return;
+        };
+        let mut row = chat.messages.row_data(index).unwrap();
+        row.pending = true;
+        row.failed = false;
+        let body = row.body.clone();
+        let reply = (row.reply_to > 0).then_some(row.reply_to);
+        chat.messages.set_row_data(index, row);
+        let peer_id = chat.row.id;
+        self.pending_send = Some(sending::PendingSend { peer_id, local_id });
+        ui.set_text_send_pending(true);
+        ui.set_message_busy(true);
+        ui.set_network_status("Отправка…".into());
+        self.bridge.send_message(peer_id, &body, reply);
     }
 
     fn poll_telegram(&mut self, ui: &Desktop) {
@@ -399,7 +455,7 @@ impl Demo {
                             chat.row.outgoing = last.outgoing;
                             chat.row.last_message_id = last.id;
                         }
-                        chat.messages.set_vec(rows);
+                        sending::merge_history(&chat.messages, rows);
                         self.refresh_chats(ui);
                         if self.chats.get(self.active).map(|c| c.row.id) == Some(peer_id) {
                             self.refresh_history(ui);
@@ -421,15 +477,30 @@ impl Demo {
                     self.upsert_message(ui, peer_id, &message, true);
                 }
                 telegram::TgEvent::MessageSent { peer_id, message } => {
+                    ui.set_text_send_pending(false);
                     ui.set_message_busy(false);
                     ui.set_network_status(Default::default());
-                    if let Some(chat) = self.chats.iter_mut().find(|c| c.row.id == peer_id) {
-                        chat.draft = Default::default();
-                    }
-                    if self.chats.get(self.active).map(|c| c.row.id) == Some(peer_id) {
-                        ui.set_draft(Default::default());
-                        ui.set_reply_message(0);
-                        ui.set_edit_message_id(0);
+                    let pending = self.pending_send.take();
+                    if let Some(pending) = &pending {
+                        if pending.peer_id == peer_id {
+                            if let Some(chat) = self.chats.iter().find(|c| c.row.id == peer_id) {
+                                sending::acknowledge(
+                                    &chat.messages,
+                                    pending.local_id,
+                                    live_message(&message),
+                                );
+                            }
+                        }
+                    } else {
+                        // File sending still uses the composer as its caption.
+                        if let Some(chat) = self.chats.iter_mut().find(|c| c.row.id == peer_id) {
+                            chat.draft = Default::default();
+                        }
+                        if self.chats.get(self.active).map(|c| c.row.id) == Some(peer_id) {
+                            ui.set_draft(Default::default());
+                            ui.set_reply_message(0);
+                            ui.set_edit_message_id(0);
+                        }
                     }
                     ui.set_file_path(Default::default());
                     self.upsert_message(ui, peer_id, &message, false);
@@ -504,8 +575,15 @@ impl Demo {
                     }
                 }
                 telegram::TgEvent::SendFailed { message } => {
+                    ui.set_text_send_pending(false);
                     ui.set_message_busy(false);
                     ui.set_network_status(message.into());
+                    if let Some(pending) = self.pending_send.take() {
+                        if let Some(chat) = self.chats.iter().find(|c| c.row.id == pending.peer_id)
+                        {
+                            sending::fail(&chat.messages, pending.local_id);
+                        }
+                    }
                 }
                 telegram::TgEvent::DialogOpened { dialog: d } => {
                     let id = d.id;
@@ -551,6 +629,8 @@ impl Demo {
                     }
                 }
                 telegram::TgEvent::LoggedOut => {
+                    ui.set_text_send_pending(false);
+                    self.pending_send = None;
                     self.live_mode = false;
                     ui.set_show_chat(false);
                     self.folders.clear();
@@ -625,6 +705,7 @@ impl Demo {
                     }
                 }
                 telegram::TgEvent::Error { message } => {
+                    ui.set_text_send_pending(false);
                     ui.set_message_busy(false);
                     ui.set_auth_busy(false);
                     if ui.get_auth_required() {
@@ -651,7 +732,9 @@ impl Demo {
         if let Some(chat) = self.chats.iter_mut().find(|c| c.row.id == peer_id) {
             let index = chat.messages.iter().position(|m| m.id == msg.id);
             if let Some(i) = index {
-                chat.messages.set_row_data(i, live_message(msg));
+                let mut row = live_message(msg);
+                row.send_token = chat.messages.row_data(i).unwrap().send_token;
+                chat.messages.set_row_data(i, row);
             } else {
                 chat.messages.push(live_message(msg));
             }
@@ -738,6 +821,10 @@ fn slint_image(pixels: &image::RgbaImage) -> slint::Image {
 
 fn message(body: &str, time: &str, outgoing: bool) -> MessageRow {
     MessageRow {
+        send_token: 0,
+        pending: false,
+        failed: false,
+        reply_to: 0,
         id: 0,
         date: Default::default(),
         has_media: false,
@@ -752,6 +839,10 @@ fn message(body: &str, time: &str, outgoing: bool) -> MessageRow {
 
 fn live_message(m: &telegram::TgMessage) -> MessageRow {
     MessageRow {
+        send_token: 0,
+        pending: false,
+        failed: false,
+        reply_to: 0,
         id: m.id,
         date: m.date.clone().into(),
         has_media: m.has_media,
@@ -769,6 +860,9 @@ fn chat_preview(text: &str) -> slint::SharedString {
 }
 
 fn install_rendering(ui: &Desktop) {
+    let played_sends = Rc::new(RefCell::new(std::collections::HashSet::new()));
+    ui.global::<TelegramMotion>()
+        .on_claim_send(move |token| played_sends.borrow_mut().insert(token));
     ui.global::<TelegramMotion>()
         .on_append_ripple(append_ripple);
     ui.global::<TelegramMotion>()
@@ -1026,6 +1120,12 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_send_message(move || {
         if let Some(ui) = weak.upgrade() {
             state.borrow_mut().send(&ui);
+        }
+    });
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_retry_message(move |local_id| {
+        if let Some(ui) = weak.upgrade() {
+            state.borrow_mut().retry_send(&ui, local_id);
         }
     });
     let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
