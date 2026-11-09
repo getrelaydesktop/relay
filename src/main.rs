@@ -771,6 +771,8 @@ fn chat_preview(text: &str) -> slint::SharedString {
 fn install_rendering(ui: &Desktop) {
     ui.global::<TelegramMotion>()
         .on_append_ripple(append_ripple);
+    ui.global::<TelegramMotion>()
+        .on_remove_ripple(remove_ripple);
     let assets = Rc::new(RefCell::new(render_assets::Assets::new()));
 
     {
@@ -792,6 +794,15 @@ fn append_ripple(waves: ModelRc<i32>, generation: i32) -> ModelRc<i32> {
         let mut rows: Vec<_> = waves.iter().collect();
         rows.push(generation);
         ModelRc::new(VecModel::from(rows))
+    }
+}
+
+fn remove_ripple(waves: ModelRc<i32>, generation: i32) {
+    if let Some(rows) = waves.as_any().downcast_ref::<VecModel<i32>>() {
+        let index = rows.iter().position(|wave| wave == generation);
+        if let Some(index) = index {
+            rows.remove(index);
+        }
     }
 }
 

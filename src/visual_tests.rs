@@ -16,12 +16,13 @@ mod probes {
             in-out property <length> press-x: 8px;
             in-out property <bool> popup-open;
             out property <float> toggle-progress: toggle.value;
+            out property <int> active-waves: ripple.active-waves;
             out property <float> popup-progress: popup.show-progress;
             out property <float> popup-width: popup.width / 180px;
             out property <float> popup-height: popup.height / 100px;
             out property <float> popup-opacity: popup.opacity;
             toggle := Motion { target: root.pressed ? 1 : 0; duration: 120ms; }
-            RippleSurface {
+            ripple := RippleSurface {
                 x: 20px; y: 20px; width: 180px; height: 48px;
                 border-radius: 24px;
                 pressed: root.pressed; press-x: root.press-x; press-y: 24px;
@@ -377,6 +378,9 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     probe
         .global::<probes::TelegramMotion>()
         .on_append_ripple(append_ripple);
+    probe
+        .global::<probes::TelegramMotion>()
+        .on_remove_ripple(remove_ripple);
     probe.show().unwrap();
     window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
     window.window.set_size(PhysicalSize::new(240, 100));
@@ -419,6 +423,13 @@ fn portable_interface_renders_icons_at_multiple_scales() {
         "the second wave must expand from the new pointer location"
     );
     save_animation_frame("ripple-overlap", &pixels);
+    window.advance(200);
+    window.take_snapshot().unwrap();
+    assert_eq!(
+        probe.get_active_waves(),
+        1,
+        "finished waves must be removed while the new press is still held"
+    );
     probe.set_pressed(false);
     window.advance(0);
     window.take_snapshot().unwrap();
@@ -431,6 +442,7 @@ fn portable_interface_renders_icons_at_multiple_scales() {
             .all(|p| p.r == 0 && p.g == 0 && p.b == 0),
         "released ripples must disappear"
     );
+    assert_eq!(probe.get_active_waves(), 0);
     probe.set_popup_open(true);
     window.advance(0);
     window.take_snapshot().unwrap();

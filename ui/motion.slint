@@ -4,6 +4,7 @@ export global TelegramMotion {
     in-out property <bool> enabled: true;
     // Appending to a persistent model retains live wave delegates and clocks.
     callback append-ripple([int], int) -> [int];
+    callback remove-ripple([int], int);
     out property <duration> box-duration: 200ms;
     out property <duration> slide-duration: 240ms;
     out property <length> slide-shift: 100px;
@@ -86,6 +87,7 @@ component RippleWave inherits Rectangle {
     in property <length> origin-x;
     in property <length> origin-y;
     in property <color> ink;
+    callback finished();
     private property <length> center-x;
     private property <length> center-y;
     private property <float> reach: Math.sqrt(
@@ -100,6 +102,11 @@ component RippleWave inherits Rectangle {
     }
     opacity: fade.value;
     visible: fade.value > 0;
+    Timer {
+        running: !root.held;
+        interval: TelegramMotion.ripple-hide-duration;
+        triggered => { root.finished(); }
+    }
     Rectangle {
         width: 2px * root.reach * expand.value;
         height: self.width;
@@ -117,6 +124,7 @@ export component RippleSurface inherits Rectangle {
     in property <color> ink;
     private property <[int]> waves;
     private property <int> generation: 0;
+    out property <int> active-waves: waves.length;
     clip: true;
     changed pressed => {
         if root.pressed {
@@ -129,11 +137,7 @@ export component RippleSurface inherits Rectangle {
         origin-x: root.press-x;
         origin-y: root.press-y;
         ink: root.ink;
-    }
-    Timer {
-        running: root.waves.length > 0 && !root.pressed;
-        interval: TelegramMotion.ripple-hide-duration;
-        triggered => { root.waves = []; }
+        finished => { TelegramMotion.remove-ripple(root.waves, wave); }
     }
 }
 
