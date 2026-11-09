@@ -1747,7 +1747,12 @@ export component Desktop inherits Window {
     receive-timer := Timer {
         running: root.follow-incoming;
         interval: TelegramMotion.receive-duration;
-        triggered => { root.follow-incoming = false; }
+        triggered => {
+            // Timers run before changed-property handlers. Include the final
+            // reveal frame before releasing the bottom-follow behavior.
+            root.scroll-to-bottom();
+            root.follow-incoming = false;
+        }
     }
     public function animate-received-message() {
         root.follow-incoming = true;

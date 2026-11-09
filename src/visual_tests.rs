@@ -552,6 +552,7 @@ fn verify_incoming(window: &PreviewWindow, ui: &Desktop) {
         }
     }
     ui.set_draft(Default::default());
+    ui.set_network_status(Default::default());
     ui.set_reply_message(0);
     ui.set_message_busy(false);
     state.refresh_chats(ui);
@@ -673,6 +674,31 @@ fn verify_incoming(window: &PreviewWindow, ui: &Desktop) {
         0
     );
 
+    // A long conversation follows the reveal through its final frame, even
+    // when there are 75 ms between rendered frames.
+    ui.invoke_scroll_to_bottom();
+    window.take_snapshot().unwrap();
+    let mut tall = incoming.clone();
+    tall.id = 103;
+    tall.body = "Ещё одна строка входящего сообщения\n".repeat(8);
+    events
+        .send(telegram::TgEvent::NewMessage {
+            peer_id: 0,
+            message: tall,
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    window.advance(0);
+    window.take_snapshot().unwrap();
+    window.advance(75);
+    window.take_snapshot().unwrap();
+    window.advance(75);
+    window.take_snapshot().unwrap();
+    assert!(
+        ui.get_history_at_bottom(),
+        "the final incoming frame must remain pinned to the bottom"
+    );
+
     let unread = state.chats[1].row.unread;
     events
         .send(telegram::TgEvent::NewMessage {
@@ -689,6 +715,7 @@ fn verify_incoming(window: &PreviewWindow, ui: &Desktop) {
 }
 
 fn verify_context_menu(window: &PreviewWindow, ui: &Desktop) {
+    ui.set_network_status(Default::default());
     ui.global::<Theme>().set_dark(true);
     ui.set_emoji_open(false);
     ui.set_chat_menu_open(false);
