@@ -1,0 +1,8 @@
+/target/
+/extreme_router_tmp/
+.env
+.env.*
+*.session
+*.session-journal
+*.session-shm
+*.session-wal

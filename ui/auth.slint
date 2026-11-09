@@ -1,0 +1,521 @@
+import { Theme, ActionButton, IconButton } from "theme.slint";
+
+component OutlinedField inherits Rectangle {
+    in property <string> label;
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> secret: false;
+    in property <bool> read-only: false;
+    callback edited();
+    callback accepted();
+
+    height: 54px;
+    background: transparent;
+    forward-focus: field-input;
+
+    property <bool> active: field-input.has-focus;
+    property <color> stroke: root.active ? Theme.accent : (Theme.dark ? #3a4858 : #dadce0);
+
+    Rectangle {
+        x: 0px;
+        y: 6px;
+        width: parent.width;
+        height: parent.height - 6px;
+        background: transparent;
+        border-radius: 6px;
+        border-width: root.active ? 2px : 1px;
+        border-color: root.stroke;
+    }
+
+    Rectangle {
+        x: 10px;
+        y: 0px;
+        width: lbl.preferred-width + 8px;
+        height: 14px;
+        background: Theme.surface;
+        lbl := Text {
+            x: 4px;
+            y: 0px;
+            text: root.label;
+            font-size: 11px;
+            font-weight: 600;
+            color: root.active ? Theme.accent : Theme.muted;
+            vertical-alignment: center;
+        }
+    }
+
+    HorizontalLayout {
+        x: 14px;
+        y: 12px;
+        width: parent.width - 28px;
+        height: parent.height - 16px;
+        field-input := TextInput {
+            text <=> root.text;
+            single-line: true;
+            read-only: root.read-only;
+            input-type: root.secret ? InputType.password : InputType.text;
+            color: Theme.ink;
+            selection-background-color: Theme.accent;
+            selection-foreground-color: #ffffff;
+            font-size: 15px;
+            vertical-alignment: center;
+            edited => { root.edited(); }
+            accepted => { root.accepted(); }
+        }
+    }
+
+    if root.text == "" && root.placeholder != "" : Text {
+        x: 14px;
+        y: 12px;
+        width: parent.width - 28px;
+        height: parent.height - 16px;
+        text: root.placeholder;
+        color: Theme.muted;
+        font-size: 15px;
+        vertical-alignment: center;
+    }
+}
+
+export component AuthScreen inherits Rectangle {
+    in-out property <int> step: 0; // 0 = QR, 1 = Phone, 2 = Code, 3 = 2FA Password
+    in property <string> qr-matrix;
+    in-out property <string> country: "Russian Federation";
+    in-out property <string> phone: "+7 ";
+    in-out property <string> code: "";
+    in-out property <string> password: "";
+    in property <string> password-hint: "";
+    in property <string> error-text: "";
+    in property <bool> busy: false;
+    in property <string> delivery: "";
+
+    callback request-qr();
+    callback switch-to-phone();
+    callback switch-to-qr();
+    callback submit-phone();
+    callback submit-code();
+    callback submit-password();
+    callback open-demo();
+    callback open-settings();
+
+    background: Theme.surface;
+
+    // Top bar actions (Back arrow + Settings + Night Mode toggle, matching Telegram Desktop IntroWidget)
+    if root.step > 0 : IconButton {
+        x: 14px;
+        y: 12px;
+        icon: "back";
+        label: "Back";
+        clicked => {
+            if root.step == 1 {
+                root.switch-to-qr();
+            } else {
+                root.step = 1;
+            }
+        }
+    }
+
+    Rectangle {
+        x: parent.width - 154px;
+        y: 14px;
+        width: 92px;
+        height: 36px;
+        background: settings-hit.has-hover ? Theme.hover : transparent;
+        border-radius: 6px;
+        Text {
+            width: parent.width;
+            height: parent.height;
+            text: "SETTINGS";
+            color: Theme.accent;
+            font-size: 13px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        settings-hit := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.open-settings(); }
+        }
+    }
+
+    IconButton {
+        x: parent.width - 54px;
+        y: 12px;
+        icon: "moon";
+        label: "Toggle night mode";
+        active: Theme.dark;
+        clicked => { Theme.dark = !Theme.dark; }
+    }
+
+    // Center 360px column
+    Rectangle {
+        x: (parent.width - 360px) / 2;
+        y: (parent.height - 500px) / 2;
+        width: 360px;
+        height: 500px;
+        background: transparent;
+
+        // STEP 0: QR CODE LOGIN
+        if root.step == 0 : Rectangle {
+            width: parent.width;
+            height: parent.height;
+
+            Image {
+                x: (parent.width - 224px) / 2;
+                y: 4px;
+                width: 224px;
+                height: 224px;
+                source: Theme.render-qr(root.qr-matrix, 224, Theme.accent);
+            }
+
+            if root.qr-matrix == "" : Text {
+                x: 20px;
+                y: 88px;
+                width: parent.width - 40px;
+                text: root.error-text == "" ? "Connecting to Telegram..." : "QR code unavailable";
+                color: Theme.muted;
+                horizontal-alignment: center;
+            }
+
+            Text {
+                x: 0px;
+                y: 248px;
+                width: parent.width;
+                height: 28px;
+                text: "Log in to Telegram by QR Code";
+                color: Theme.ink;
+                font-size: 19px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            for step-text[idx] in [
+                "Open Telegram on your phone",
+                "Go to Settings > Devices > Link Desktop Device",
+                "Point your phone at this screen to confirm login"
+            ] : Rectangle {
+                x: 22px;
+                y: 292px + idx * 32px;
+                width: parent.width - 44px;
+                height: 26px;
+                Image {
+                    x: 0px;
+                    y: 3px;
+                    width: 20px;
+                    height: 20px;
+                    source: Theme.render-pill(20, 20, Theme.accent, #00000000, 0);
+                }
+                Text {
+                    x: 0px;
+                    y: 3px;
+                    width: 20px;
+                    height: 20px;
+                    text: "\{idx + 1}";
+                    color: #ffffff;
+                    font-size: 11px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                Text {
+                    x: 30px;
+                    y: 0px;
+                    width: parent.width - 30px;
+                    height: 26px;
+                    text: step-text;
+                    color: Theme.ink;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                }
+            }
+
+            if root.error-text != "" : Text {
+                x: 10px;
+                y: 392px;
+                width: parent.width - 20px;
+                text: root.error-text;
+                color: #ef5b5b;
+                font-size: 12px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+
+            Rectangle {
+                x: 20px;
+                y: 416px;
+                width: parent.width - 40px;
+                height: 34px;
+                background: phone-link.has-hover ? Theme.hover : transparent;
+                border-radius: 6px;
+                Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: "Or log in using your phone number";
+                    color: Theme.accent;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                phone-link := TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { root.switch-to-phone(); }
+                }
+            }
+
+            Rectangle {
+                x: 60px;
+                y: 456px;
+                width: parent.width - 120px;
+                height: 30px;
+                background: demo-link-qr.has-hover ? Theme.hover : transparent;
+                border-radius: 6px;
+                Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: "Open Demo Chats";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                demo-link-qr := TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { root.open-demo(); }
+                }
+            }
+        }
+
+        // STEP 1: PHONE NUMBER LOGIN
+        if root.step == 1 : Rectangle {
+            width: parent.width;
+            height: parent.height;
+
+            Text {
+                x: 20px;
+                y: 38px;
+                width: parent.width - 40px;
+                text: "Your Phone Number";
+                color: Theme.ink;
+                font-size: 20px;
+                font-weight: 600;
+            }
+
+            Text {
+                x: 20px;
+                y: 72px;
+                width: parent.width - 40px;
+                text: "Please confirm your country code and enter your phone number.";
+                color: Theme.muted;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+
+            OutlinedField {
+                x: 20px;
+                y: 126px;
+                width: parent.width - 40px;
+                label: "Country";
+                text <=> root.country;
+            }
+
+            phone-field := OutlinedField {
+                x: 20px;
+                y: 196px;
+                width: parent.width - 40px;
+                label: "Phone Number";
+                text <=> root.phone;
+                placeholder: "+7 --- --- -- --";
+                accepted => { root.submit-phone(); }
+            }
+
+            if root.error-text != "" : Text {
+                x: 20px;
+                y: 262px;
+                width: parent.width - 40px;
+                text: root.error-text;
+                color: #ef5b5b;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+
+            ActionButton {
+                x: 20px;
+                y: 304px;
+                width: parent.width - 40px;
+                height: 44px;
+                text: root.busy ? "PLEASE WAIT..." : "NEXT";
+                primary: true;
+                enabled: !root.busy && root.phone != "";
+                clicked => { root.submit-phone(); }
+            }
+
+            Rectangle {
+                x: 40px;
+                y: 366px;
+                width: parent.width - 80px;
+                height: 34px;
+                background: qr-back-hit.has-hover ? Theme.hover : transparent;
+                border-radius: 6px;
+                Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: "Quick Log In Using QR Code";
+                    color: Theme.accent;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                qr-back-hit := TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { root.switch-to-qr(); }
+                }
+            }
+
+            Rectangle {
+                x: 60px;
+                y: 410px;
+                width: parent.width - 120px;
+                height: 30px;
+                background: demo-link-ph.has-hover ? Theme.hover : transparent;
+                border-radius: 6px;
+                Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: "Open Demo Chats";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                demo-link-ph := TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { root.open-demo(); }
+                }
+            }
+        }
+
+        // STEP 2: TELEGRAM / SMS VERIFICATION CODE
+        if root.step == 2 : Rectangle {
+            width: parent.width;
+            height: parent.height;
+
+            Text {
+                x: 20px;
+                y: 52px;
+                width: parent.width - 40px;
+                text: root.phone;
+                color: Theme.ink;
+                font-size: 20px;
+                font-weight: 600;
+            }
+
+            Text {
+                x: 20px;
+                y: 86px;
+                width: parent.width - 40px;
+                text: root.delivery;
+                color: Theme.muted;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+
+            code-field := OutlinedField {
+                x: 20px;
+                y: 146px;
+                width: parent.width - 40px;
+                label: "Code";
+                text <=> root.code;
+                placeholder: "12345";
+                accepted => { root.submit-code(); }
+            }
+
+            if root.error-text != "" : Text {
+                x: 20px;
+                y: 212px;
+                width: parent.width - 40px;
+                text: root.error-text;
+                color: #ef5b5b;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+
+            ActionButton {
+                x: 20px;
+                y: 254px;
+                width: parent.width - 40px;
+                height: 44px;
+                text: root.busy ? "VERIFYING..." : "NEXT";
+                primary: true;
+                enabled: !root.busy && root.code != "";
+                clicked => { root.submit-code(); }
+            }
+        }
+
+        // STEP 3: 2FA CLOUD PASSWORD
+        if root.step == 3 : Rectangle {
+            width: parent.width;
+            height: parent.height;
+
+            Text {
+                x: 20px;
+                y: 52px;
+                width: parent.width - 40px;
+                text: "Your Password";
+                color: Theme.ink;
+                font-size: 20px;
+                font-weight: 600;
+            }
+
+            Text {
+                x: 20px;
+                y: 86px;
+                width: parent.width - 40px;
+                text: "You have Two-Step Verification enabled, so your account is protected with an additional password.";
+                color: Theme.muted;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+
+            pass-field := OutlinedField {
+                x: 20px;
+                y: 154px;
+                width: parent.width - 40px;
+                label: root.password-hint != "" ? "Password (hint: \{root.password-hint})" : "Password";
+                text <=> root.password;
+                secret: true;
+                accepted => { root.submit-password(); }
+            }
+
+            if root.error-text != "" : Text {
+                x: 20px;
+                y: 220px;
+                width: parent.width - 40px;
+                text: root.error-text;
+                color: #ef5b5b;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+
+            ActionButton {
+                x: 20px;
+                y: 262px;
+                width: parent.width - 40px;
+                height: 44px;
+                text: root.busy ? "CHECKING..." : "SUBMIT";
+                primary: true;
+                enabled: !root.busy && root.password != "";
+                clicked => { root.submit-password(); }
+            }
+        }
+    }
+}

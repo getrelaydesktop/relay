@@ -1,0 +1,142 @@
+import { Theme } from "theme.slint";
+
+export component SettingsHome inherits Rectangle {
+    in property <string> user-name: "Relay Desktop";
+    in property <string> user-phone: "+7 999 000-00-00";
+    in property <string> user-username: "@relay_desktop";
+    in property <string> user-initials: "R";
+    callback appearance-requested();
+    callback logout-requested();
+    background: Theme.surface;
+
+    Rectangle {
+        x: 22px;
+        y: 10px;
+        width: 72px;
+        height: 72px;
+        Image {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            source: Theme.render-avatar(72, #72d5fd, #2a9ef1, false);
+        }
+        Text {
+            width: parent.width;
+            height: parent.height;
+            text: root.user-initials;
+            color: #ffffff;
+            font-size: 29px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    Text {
+        x: 112px;
+        y: 16px;
+        width: parent.width - 134px;
+        text: root.user-name;
+        font-size: 16px;
+        font-weight: 600;
+        color: Theme.ink;
+        overflow: elide;
+    }
+    Text {
+        x: 112px;
+        y: 41px;
+        text: root.user-phone;
+        font-size: 13px;
+        color: Theme.ink;
+    }
+    Text {
+        x: 112px;
+        y: 61px;
+        text: root.user-username;
+        font-size: 13px;
+        color: Theme.muted;
+    }
+    Rectangle {
+        x: 0px;
+        y: 96px;
+        width: parent.width;
+        height: 10px;
+        background: Theme.dark ? #202a36 : #f1f1f1;
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: 1px;
+            background: Theme.border;
+        }
+        Rectangle {
+            x: 0px;
+            y: parent.height - 1px;
+            width: parent.width;
+            height: 1px;
+            background: Theme.border;
+        }
+    }
+    for name[index] in [
+        "My Account", "Notifications and Sounds", "Privacy and Security",
+        "Chat Settings", "Chat Folders", "Advanced", "Speakers and Camera",
+        "Battery and Animations", "Language", "Log Out"
+    ] : Rectangle {
+        x: 0px;
+        y: 112px + index * 40px;
+        width: parent.width;
+        height: 40px;
+        background: pointer.has-hover ? Theme.hover : transparent;
+        Image {
+            x: 23px;
+            y: (parent.height - self.height) / 2;
+            width: self.source.width * 1px;
+            height: self.source.height * 1px;
+            source: Theme.render-icon(
+                index == 0 ? "profile"
+                : index == 1 ? "notifications"
+                : index == 2 ? "privacy"
+                : index == 3 ? "chat-settings"
+                : index == 4 ? "folder"
+                : index == 5 ? "advanced"
+                : index == 6 ? "phone"
+                : index == 7 ? "power"
+                : index == 8 ? "language"
+                : "close",
+                index == 9 ? #ef5b5b : Theme.menu-icon-fg
+            );
+        }
+        Text {
+            x: 64px;
+            width: parent.width - 140px;
+            height: parent.height;
+            text: name;
+            font-size: 13px;
+            color: index == 9 ? #ef5b5b : Theme.ink;
+            vertical-alignment: center;
+        }
+        if index == 8 : Text {
+            x: parent.width - 100px;
+            width: 78px;
+            height: parent.height;
+            text: "English";
+            font-size: 13px;
+            color: Theme.accent;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        pointer := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            mouse-cursor: index == 3 || index == 9 ? MouseCursor.pointer : MouseCursor.default;
+            enabled: index == 3 || index == 9;
+            clicked => {
+                if index == 3 {
+                    root.appearance-requested();
+                } else if index == 9 {
+                    root.logout-requested();
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,253 @@
+export global Theme {
+    in-out property <int> design: 0;
+    in-out property <bool> dark: true;
+    in-out property <color> seed: #4266a7;
+
+    out property <bool> material: design == 1;
+    out property <bool> fluent: design == 2;
+    out property <color> accent: material ? seed : (dark ? #5288c1 : #40a7e3);
+    out property <color> surface: material
+        ? (dark ? #1b1b20 : #faf8ff)
+        : (dark ? #17212b : #ffffff);
+    out property <color> canvas: material
+        ? (dark ? #141318 : #f0eef6)
+        : fluent ? (dark ? #202020 : #f3f3f3)
+        : (dark ? #0e1621 : #dce6de);
+    out property <color> rail: dark ? #0e1621 : #293a4c;
+    out property <color> rail-active: dark ? #17212b : #17212b;
+    out property <color> rail-muted: dark ? #768c9e : #8294a5;
+    out property <color> rail-accent: dark ? #5eb5f7 : #64c2ff;
+    out property <color> titlebar: dark ? #242f3d : #f1f1f1;
+    out property <color> titlebar-fg: dark ? #8c9aa9 : #a8a8a8;
+    out property <color> titlebar-hover: dark ? #2c3847 : #e3e3e3;
+    out property <color> titlebar-hover-fg: dark ? #d9dcdf : #666666;
+    out property <color> hover: dark ? #202b36 : #f1f1f1;
+    out property <color> incoming: dark ? #182533 : #ffffff;
+    out property <color> service-bg: dark ? #1e2c3a99 : #4a573840;
+    out property <color> service-fg: #ffffff;
+    out property <color> ink: dark ? #f5f5f5 : #000000;
+    out property <color> muted: dark ? #6c7883 : #999999;
+    out property <color> icon-fg: dark ? #6c7883 : #a8a8a8;
+    out property <color> icon-hover-fg: dark ? #737e87 : #999999;
+    out property <color> menu-icon-fg: dark ? #737e87 : #a8a8a8;
+    out property <color> line: dark ? #101921 : #e7e7e7;
+    out property <color> border: dark ? #101921 : #e0e0e0;
+    out property <color> selected: material
+        ? (dark ? seed.darker(0.45) : seed.brighter(0.82))
+        : fluent ? (dark ? #303b46 : #e6eff8)
+        : (dark ? #2b5278 : #419fd9);
+    out property <color> selected-ink: !material && !fluent ? #ffffff : ink;
+    out property <color> selected-muted: !material && !fluent ? (dark ? #d6e9fb : #e5f5ff) : muted;
+    out property <color> badge-bg: dark ? #3e546a : #bbbbbb;
+    out property <color> outgoing-muted: dark ? #6c9cc4 : #70b15c;
+    out property <color> outgoing-check: dark ? #62b1f6 : #5dc452;
+    out property <color> outgoing: material
+        ? (dark ? seed.darker(0.55) : seed.brighter(0.88))
+        : (dark ? #2b5278 : #effdde);
+    out property <length> control-radius: material ? 20px : fluent ? 8px : 10px;
+    out property <length> bubble-radius: material ? 18px : fluent ? 10px : 14px;
+
+    pure callback render-icon(string, color) -> image;
+    pure callback render-avatar(int, color, color, bool) -> image;
+    pure callback render-pill(int, int, color, color, int) -> image;
+    pure callback render-bubble(int, int, int, int, color, int) -> image;
+    pure callback render-qr(string, int, color) -> image;
+}
+
+export component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> selected: false;
+    in property <bool> outlined: false;
+    in property <bool> enabled: true;
+    callback clicked();
+    min-width: label.preferred-width + 24px;
+    min-height: 36px;
+    horizontal-stretch: 0;
+    property <color> fill-color: primary ? Theme.accent : selected ? Theme.selected
+        : pointer.has-hover ? Theme.hover : #00000000;
+    opacity: enabled ? 1 : 0.4;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-enabled: enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: keyboard;
+    if root.fill-color.alpha > 0 : Image {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        source: Theme.render-bubble(
+            parent.width / 1px,
+            parent.height / 1px,
+            0,
+            Theme.control-radius / 1px,
+            root.fill-color,
+            0
+        );
+    }
+    if root.outlined && !root.primary : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: Theme.control-radius;
+        border-width: 1px;
+        border-color: pointer.has-hover ? Theme.icon-hover-fg : Theme.border;
+        background: transparent;
+    }
+    label := Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        color: root.primary ? #ffffff : root.selected ? Theme.selected-ink : Theme.ink;
+        font-size: 13px;
+        font-weight: root.selected || root.primary ? 600 : root.outlined ? 500 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    keyboard := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    pointer := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { keyboard.focus(); root.clicked(); }
+    }
+}
+
+export component Entry inherits Rectangle {
+    in property <bool> read-only: false;
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> plain: false;
+    callback edited();
+    callback accepted();
+    min-height: 34px;
+    min-width: 80px;
+    background: transparent;
+    forward-focus: input;
+    accessible-role: text-input;
+    accessible-label: placeholder;
+    accessible-value: text;
+    accessible-action-set-value(value) => { root.text = value; root.edited(); }
+    if !root.plain : Image {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        source: Theme.render-pill(
+            parent.width / 1px,
+            parent.height / 1px,
+            Theme.dark ? #242f3d : #f1f1f1,
+            input.has-focus ? Theme.accent : #00000000,
+            input.has-focus ? 2 : 0
+        );
+    }
+    HorizontalLayout {
+        width: parent.width;
+        height: parent.height;
+        padding-left: root.plain ? 6px : 15px;
+        padding-right: root.text != "" && !root.plain ? 32px : 14px;
+        input := TextInput {
+            text <=> root.text;
+            single-line: true;
+          read-only: root.read-only;
+            color: Theme.ink;
+            selection-background-color: Theme.accent;
+            selection-foreground-color: #ffffff;
+            font-size: 13px;
+            vertical-alignment: center;
+            edited => { root.edited(); }
+            accepted => { root.accepted(); }
+        }
+    }
+    if root.text == "" : Text {
+        x: root.plain ? 6px : 15px;
+        width: parent.width - 28px;
+        height: parent.height;
+        text: root.placeholder;
+        color: Theme.muted;
+        font-size: 13px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    if root.text != "" && !root.plain : Rectangle {
+        x: parent.width - 30px;
+        y: (parent.height - 24px) / 2;
+        width: 24px;
+        height: 24px;
+        Image {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: self.source.width * 1px;
+            height: self.source.height * 1px;
+            source: Theme.render-icon("close", clear-hit.has-hover ? Theme.icon-hover-fg : Theme.icon-fg);
+        }
+        clear-hit := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => {
+                root.text = "";
+                root.edited();
+                input.focus();
+            }
+        }
+    }
+}
+
+export component IconButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <bool> active: false;
+    callback clicked();
+    width: 40px;
+    height: 40px;
+    background: transparent;
+    opacity: enabled ? 1 : 0.45;
+    accessible-role: button;
+    accessible-label: label;
+    accessible-enabled: enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: keyboard;
+    Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: self.source.width * 1px;
+        height: self.source.height * 1px;
+        source: Theme.render-icon(
+            root.icon,
+            root.active ? Theme.accent : hit.has-hover && root.enabled ? Theme.icon-hover-fg : Theme.icon-fg
+        );
+    }
+    keyboard := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    hit := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { keyboard.focus(); root.clicked(); }
+    }
+}

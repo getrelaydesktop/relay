@@ -1,0 +1,25 @@
+# Imported Telegram Desktop resources
+
+The PNG interface icons and interface metrics were taken from Telegram Desktop
+v7.4.1, commit 157f5cfc85e2dd1fa67f129a5e31a81db5ddeb19.
+
+Source: https://github.com/telegramdesktop/tdesktop/tree/v7.4.1
+
+The original icon files are in Telegram/Resources/icons. The back, close and
+window caption icons come from Telegram/lib_ui/icons at submodule commit
+42c6f1e88db81e6d9e8006f3e7b1c3ba39f9cac4.
+The original grayscale icon masks were converted to RGBA by using the mask
+intensity as the alpha channel. Glyph dimensions, padding and antialiasing
+were preserved. The icons are tinted by Slint at runtime.
+
+Copyright (c) 2014-2026 The Telegram Desktop Authors.
+See Telegram-LEGAL.txt and Telegram-GPL-3.0.txt.
+
+The bundled Open Sans Regular and SemiBold fonts come from Telegram/lib_ui/fonts.
+Digitized data copyright 2010-2011, Google Corporation.
+Licensed under Apache License 2.0. See OpenSans-Apache-2.0.txt.
+
+The Slint interface is a manual port. It does not contain Telegram's Qt widget
+implementation. Appearance metrics are based on dialogs/dialogs.style,
+ui/chat/chat.style, window/window_main_menu.style, lib_ui/ui/basic.style and the
+bundled night.tdesktop-theme color palette.

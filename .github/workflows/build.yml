@@ -1,0 +1,51 @@
+name: Build debug and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Windows x64 (${{ matrix.profile }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
+    env:
+      CARGO_TERM_COLOR: always
+      TG_API_HASH: ${{ secrets.TG_API_HASH }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - name: Select Rust stable
+        run: rustup default stable
+      - name: Build
+        shell: pwsh
+        run: |
+          if ('${{ matrix.profile }}' -eq 'release') {
+            cargo build --locked --release
+          } else {
+            cargo build --locked
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload executable and licenses
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-desktop-windows-x64-${{ matrix.profile }}
+          if-no-files-found: error
+          path: |
+            target/${{ matrix.profile }}/relay-desktop.exe
+            LICENSE
+            licenses/

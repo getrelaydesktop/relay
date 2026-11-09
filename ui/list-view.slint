@@ -1,0 +1,34 @@
+import { Theme } from "theme.slint";
+
+// Full-width rows with an overlay scrollbar, matching Telegram's chat lists.
+export component ListView inherits Rectangle {
+    in-out property <length> viewport-x <=> content.viewport-x;
+    in-out property <length> viewport-y <=> content.viewport-y;
+    in-out property <length> viewport-width <=> content.viewport-width;
+    in-out property <length> viewport-height <=> content.viewport-height;
+    out property <length> visible-width: content.width;
+    out property <length> visible-height: content.height;
+    accessible-role: list;
+    clip: true;
+
+    content := Flickable {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        @children
+    }
+
+    Rectangle {
+        visible: root.viewport-height > root.height;
+        x: parent.width - 6px;
+        y: min(parent.height - self.height, max(0px,
+            -root.viewport-y * (parent.height - self.height)
+            / max(1px, root.viewport-height - root.height)));
+        width: 4px;
+        height: min(parent.height, max(24px,
+            parent.height * parent.height / max(1px, root.viewport-height)));
+        background: Theme.dark ? #7f84897a : #7f84894c;
+        border-radius: 2px;
+    }
+}
