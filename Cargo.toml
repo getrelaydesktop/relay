@@ -24,6 +24,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 [build-dependencies]
 slint-build = "=1.16.1"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }
+
 [dev-dependencies]
 # Render UI regression tests with the same engine as the application.
 i-slint-renderer-skia = "=1.16.1"

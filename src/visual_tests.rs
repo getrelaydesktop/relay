@@ -572,6 +572,7 @@ fn verify_incoming(window: &PreviewWindow, ui: &Desktop) {
         outgoing: false,
         channel_post: false,
         service: false,
+        ..Default::default()
     };
     let count = state.chats[0].messages.row_count();
     events
@@ -983,6 +984,7 @@ fn verify_sending(window: &PreviewWindow, ui: &Desktop) {
         outgoing: true,
         channel_post: false,
         service: false,
+        ..Default::default()
     };
     events
         .send(telegram::TgEvent::MessageSent {

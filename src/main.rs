@@ -3,14 +3,18 @@
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use slint::winit_030::{WinitWindowAccessor, winit::window::ResizeDirection};
-use slint::{Color, ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
+use slint::{Color, ComponentHandle, Model, ModelRc, Timer, VecModel};
 
 slint::include_modules!();
+mod details;
 mod preferences;
+mod presence;
 mod qr;
 mod render_assets;
 mod sending;
 mod telegram;
+#[cfg(windows)]
+mod tray;
 #[cfg(test)]
 mod visual_tests;
 
@@ -31,6 +35,9 @@ struct Chat {
 }
 
 struct Demo {
+    detail_requests: std::collections::HashSet<(i32, i32)>,
+    preview_lru: std::collections::VecDeque<(i32, i32, usize)>,
+    preview_bytes: usize,
     chats: Vec<Chat>,
     chat_model: Rc<VecModel<ChatRow>>,
     folder_model: Rc<VecModel<FolderRow>>,
@@ -74,6 +81,9 @@ impl Demo {
 
     fn with_bridge(bridge: telegram::TelegramBridge) -> Self {
         Self {
+            detail_requests: Default::default(),
+            preview_lru: Default::default(),
+            preview_bytes: 0,
             chats: Self::demo_chats(),
             chat_model: Rc::new(VecModel::default()),
             folder_model: Rc::new(VecModel::default()),
@@ -232,6 +242,9 @@ impl Demo {
     }
 
     fn open(&mut self, ui: &Desktop, id: i32) {
+        self.open_with_history(ui, id, true);
+    }
+    fn open_with_history(&mut self, ui: &Desktop, id: i32, load_history: bool) {
         let Some(index) = self.chats.iter().position(|chat| chat.row.id == id) else {
             return;
         };
@@ -251,7 +264,7 @@ impl Demo {
         ui.set_draft(self.chats[index].draft.clone());
         ui.set_show_chat(true);
         ui.set_has_chat(true);
-        if self.live_mode {
+        if self.live_mode && load_history {
             self.bridge.load_history(id);
             self.bridge.read(id);
         }
@@ -289,6 +302,10 @@ impl Demo {
         row.date = now.format("%d.%m.%Y").to_string().into();
         row.send_token = token;
         row.reply_to = reply.unwrap_or_default();
+        row.sender = "Вы".into();
+        row.reply_author = ui.get_reply_author();
+        row.reply_body = ui.get_reply_body();
+        row.reply_resolved = reply.is_some();
         row.pending = self.live_mode;
         row.channel_post = self.chats[idx].row.channel_access == 2;
         let chat = &mut self.chats[idx];
@@ -347,12 +364,107 @@ impl Demo {
     }
 
     fn poll_telegram(&mut self, ui: &Desktop) {
+        self.bridge.begin_poll();
         let mut avatars_changed = false;
-        for _ in 0..64 {
+        loop {
             let Some(ev) = self.bridge.try_recv() else {
                 break;
             };
             match ev {
+                telegram::TgEvent::Presence {
+                    peer_id,
+                    text,
+                    online,
+                } => {
+                    if let Some(chat) = self.chats.iter_mut().find(|chat| chat.row.id == peer_id) {
+                        chat.row.presence = text.into();
+                        chat.row.online = online;
+                        if ui.get_active_chat().id == peer_id {
+                            ui.set_active_chat(chat.row.clone());
+                        }
+                    }
+                }
+                telegram::TgEvent::Thumbnail {
+                    peer_id,
+                    message_id,
+                    pixels,
+                } => {
+                    self.detail_requests.remove(&(peer_id, message_id));
+                    if let Some(chat) = self.chats.iter().find(|chat| chat.row.id == peer_id) {
+                        if let Some(index) =
+                            chat.messages.iter().position(|row| row.id == message_id)
+                        {
+                            let mut row = chat.messages.row_data(index).unwrap();
+                            row.preview_failed = pixels.is_none();
+                            if let Some(pixels) = pixels {
+                                let bytes = pixels.len();
+                                row.preview = slint_image(&pixels);
+                                row.has_preview = true;
+                                self.preview_lru.push_back((peer_id, message_id, bytes));
+                                self.preview_bytes += bytes;
+                            }
+                            chat.messages.set_row_data(index, row);
+                        }
+                    }
+                    while self.preview_bytes > 24 * 1024 * 1024 {
+                        let Some((peer, mid, bytes)) = self.preview_lru.pop_front() else {
+                            break;
+                        };
+                        self.preview_bytes = self.preview_bytes.saturating_sub(bytes);
+                        if let Some(chat) = self.chats.iter().find(|chat| chat.row.id == peer) {
+                            if let Some(index) = chat.messages.iter().position(|row| row.id == mid)
+                            {
+                                let mut row = chat.messages.row_data(index).unwrap();
+                                row.preview = Default::default();
+                                row.has_preview = false;
+                                chat.messages.set_row_data(index, row);
+                            }
+                        }
+                    }
+                }
+                telegram::TgEvent::ReplyResolved {
+                    peer_id,
+                    message_id,
+                    original,
+                } => {
+                    if let Some(chat) = self.chats.iter().find(|chat| chat.row.id == peer_id) {
+                        if let Some(index) =
+                            chat.messages.iter().position(|row| row.id == message_id)
+                        {
+                            let mut row = chat.messages.row_data(index).unwrap();
+                            row.reply_resolved = true;
+                            if let Some(original) = original {
+                                row.reply_author = original.sender.into();
+                                if row.reply_body.is_empty() {
+                                    row.reply_body = original.body.into();
+                                }
+                            } else if row.reply_body.is_empty() {
+                                row.reply_body = "Сообщение удалено или недоступно".into();
+                            }
+                            chat.messages.set_row_data(index, row);
+                        }
+                    }
+                }
+                telegram::TgEvent::JumpReady {
+                    peer_id,
+                    message_id,
+                    messages,
+                } => {
+                    if let Some(chat) = self.chats.iter().find(|chat| chat.row.id == peer_id) {
+                        sending::merge_history(
+                            &chat.messages,
+                            messages.iter().map(live_message).collect(),
+                        );
+                        self.open_with_history(ui, peer_id, false);
+                        let weak = ui.as_weak();
+                        Timer::single_shot(Duration::ZERO, move || {
+                            if let Some(ui) = weak.upgrade() {
+                                ui.invoke_reveal_message(message_id);
+                            }
+                        });
+                        ui.set_network_status(Default::default());
+                    }
+                }
                 telegram::TgEvent::Qr { matrix } => {
                     let ready = !matrix.is_empty();
                     ui.set_auth_qr_matrix(matrix.into());
@@ -428,6 +540,8 @@ impl Demo {
                                         read_outbox_max_id: d.read_outbox_max_id,
                                         folder: d.folder,
                                         channel_access: d.channel as i32,
+                                        presence: d.presence.into(),
+                                        online: d.online,
                                         ..Default::default()
                                     },
                                     messages: Rc::new(VecModel::from(
@@ -602,6 +716,8 @@ impl Demo {
                         chat.messages
                             .set_vec(d.messages.iter().map(live_message).collect::<Vec<_>>());
                         chat.row.channel_access = d.channel as i32;
+                        chat.row.presence = d.presence.into();
+                        chat.row.online = d.online;
                         self.chats.push(chat);
                     }
                     self.folder = 0;
@@ -625,6 +741,8 @@ impl Demo {
                         chat.messages
                             .set_vec(d.messages.iter().map(live_message).collect::<Vec<_>>());
                         chat.row.channel_access = d.channel as i32;
+                        chat.row.presence = d.presence.into();
+                        chat.row.online = d.online;
                         self.chats.push(chat);
                         self.refresh_chats(ui);
                     }
@@ -722,6 +840,9 @@ impl Demo {
         if avatars_changed {
             self.refresh_chats(ui);
         }
+        for chat in &self.chats {
+            details::resolve_local(&chat.messages, &chat.row.title);
+        }
     }
 
     fn upsert_message(
@@ -743,8 +864,7 @@ impl Demo {
             let index = chat.messages.iter().position(|m| m.id == msg.id);
             if let Some(i) = index {
                 let mut row = live_message(msg);
-                row.send_token = chat.messages.row_data(i).unwrap().send_token;
-                row.receive_token = chat.messages.row_data(i).unwrap().receive_token;
+                details::retain(&mut row, &chat.messages.row_data(i).unwrap());
                 chat.messages.set_row_data(i, row);
             } else {
                 let mut row = live_message(msg);
@@ -854,6 +974,7 @@ fn message(body: &str, time: &str, outgoing: bool) -> MessageRow {
         outgoing,
         channel_post: false,
         service: false,
+        ..Default::default()
     }
 }
 
@@ -863,7 +984,12 @@ fn live_message(m: &telegram::TgMessage) -> MessageRow {
         receive_token: 0,
         pending: false,
         failed: false,
-        reply_to: 0,
+        reply_to: m.reply_to,
+        sender: m.sender.clone().into(),
+        reply_body: m.reply_quote.clone().into(),
+        reply_external: m.reply_external,
+        photo_width: m.photo_width,
+        photo_height: m.photo_height,
         id: m.id,
         date: m.date.clone().into(),
         has_media: m.has_media,
@@ -873,6 +999,7 @@ fn live_message(m: &telegram::TgMessage) -> MessageRow {
         outgoing: m.outgoing,
         channel_post: m.channel_post,
         service: m.service,
+        ..Default::default()
     }
 }
 
@@ -933,6 +1060,37 @@ fn main() -> Result<(), slint::PlatformError> {
         .select()?;
     let ui = Desktop::new()?;
     install_rendering(&ui);
+    #[cfg(windows)]
+    let tray = {
+        let restore = ui.as_weak();
+        let exit = ui.as_weak();
+        match tray::Tray::new(
+            move || {
+                let _ = restore.clone().upgrade_in_event_loop(|ui| {
+                    ui.set_window_visible(true);
+                    ui.window().set_minimized(false);
+                    let _ = ui.show();
+                    ui.window()
+                        .with_winit_window(|window| window.focus_window());
+                });
+            },
+            move || {
+                let _ = exit.clone().upgrade_in_event_loop(|_| {
+                    let _ = slint::quit_event_loop();
+                });
+            },
+        ) {
+            Ok(tray) => Some(tray),
+            Err(error) => {
+                eprintln!("Notification icon unavailable: {error}");
+                None
+            }
+        }
+    };
+    #[cfg(windows)]
+    let has_tray = tray.is_some();
+    #[cfg(not(windows))]
+    let has_tray = false;
     let weak = ui.as_weak();
     ui.on_minimize_window(move || {
         if let Some(ui) = weak.upgrade() {
@@ -945,10 +1103,25 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.window().set_maximized(!ui.window().is_maximized());
         }
     });
-    ui.on_close_window(|| {
-        if let Err(error) = slint::quit_event_loop() {
+    let weak = ui.as_weak();
+    ui.on_close_window(move || {
+        if has_tray {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_window_visible(false);
+                let _ = ui.hide();
+            }
+        } else if let Err(error) = slint::quit_event_loop() {
             eprintln!("Could not close the application: {error}");
         }
+    });
+    let weak = ui.as_weak();
+    ui.window().on_close_requested(move || {
+        if has_tray {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_window_visible(false);
+            }
+        }
+        slint::CloseRequestResponse::HideWindow
     });
     let weak = ui.as_weak();
     ui.on_drag_window(move || {
@@ -1086,17 +1259,104 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    // Poll MTProto bridge events every 100ms
-    let poll_timer = Timer::default();
+    // Wake only when the bridge has events, including while the window is hidden.
     {
         let weak = ui.as_weak();
         let state = Rc::clone(&demo);
-        poll_timer.start(TimerMode::Repeated, Duration::from_millis(100), move || {
+        ui.on_network_events(move || {
             if let Some(ui) = weak.upgrade() {
                 state.borrow_mut().poll_telegram(&ui);
             }
         });
+        let weak = std::sync::Mutex::new(ui.as_weak());
+        demo.borrow().bridge.notify_with(move || {
+            let _ = weak
+                .lock()
+                .unwrap()
+                .clone()
+                .upgrade_in_event_loop(|ui| ui.invoke_network_events());
+        });
     }
+
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_request_details(move |mid| {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut state = state.borrow_mut();
+        if !state.live_mode || mid <= 0 {
+            return;
+        }
+        let Some(chat) = state.chats.get(state.active) else {
+            return;
+        };
+        let peer = chat.row.id;
+        details::resolve_local(&chat.messages, &chat.row.title);
+        let Some(row) = chat.messages.iter().find(|row| row.id == mid) else {
+            return;
+        };
+        if state.detail_requests.insert((peer, mid)) {
+            if row.is_photo && !row.has_preview && !row.preview_failed {
+                state.bridge.thumbnail(peer, mid);
+            }
+            if row.reply_to > 0 && !row.reply_resolved {
+                state.bridge.resolve_reply(peer, mid);
+            }
+        }
+    });
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_jump_reply(move |mid| {
+        let Some(ui) = weak.upgrade() else { return };
+        let state = state.borrow();
+        let Some(chat) = state.chats.get(state.active) else {
+            return;
+        };
+        let Some(row) = chat.messages.iter().find(|row| row.id == mid) else {
+            return;
+        };
+        if !row.reply_external && chat.messages.iter().any(|parent| parent.id == row.reply_to) {
+            ui.invoke_reveal_message(row.reply_to);
+        } else if state.live_mode {
+            ui.set_network_status("Загрузка исходного сообщения…".into());
+            state.bridge.jump_reply(chat.row.id, mid);
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_cancel_reply(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_reply_message(0);
+            ui.set_edit_message_id(0);
+            ui.set_reply_author(Default::default());
+            ui.set_reply_body(Default::default());
+            ui.invoke_focus_composer();
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_preview_file(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let path = ui.get_file_path().to_string();
+        ui.set_file_preview_error(Default::default());
+        let weak = ui.as_weak();
+        std::thread::spawn(move || {
+            let preview = details::file_preview(&path);
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                if ui.get_file_path() != path {
+                    return;
+                }
+                match preview {
+                    Ok(Some(pixels)) => {
+                        ui.set_file_preview(slint_image(&pixels));
+                        ui.set_has_file_preview(true);
+                    }
+                    Ok(None) => {
+                        ui.set_has_file_preview(false);
+                    }
+                    Err(error) => {
+                        ui.set_has_file_preview(false);
+                        ui.set_file_preview_error(error.into());
+                    }
+                }
+            });
+        });
+    });
 
     let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
     ui.on_open_chat(move |id| {
@@ -1236,7 +1496,23 @@ fn main() -> Result<(), slint::PlatformError> {
             "reply" if mid > 0 => {
                 ui.set_reply_message(mid);
                 ui.set_edit_message_id(0);
-                ui.set_network_status(format!("Ответ: {}", ui.get_selected_body()).into());
+                let sender = state.chats[state.active]
+                    .messages
+                    .iter()
+                    .find(|row| row.id == mid)
+                    .map(|row| {
+                        if row.outgoing {
+                            "Вы".into()
+                        } else if row.sender.is_empty() {
+                            state.chats[state.active].row.title.clone()
+                        } else {
+                            row.sender
+                        }
+                    })
+                    .unwrap_or_default();
+                ui.set_reply_author(sender);
+                ui.set_reply_body(ui.get_selected_body());
+                ui.set_network_status(Default::default());
                 ui.invoke_focus_composer();
             }
             "edit" if mid > 0 && ui.get_selected_outgoing() => {
@@ -1334,5 +1610,10 @@ fn main() -> Result<(), slint::PlatformError> {
             state.bridge.join_channel(chat.id);
         }
     });
-    ui.run()
+    if has_tray {
+        ui.show()?;
+        slint::run_event_loop_until_quit()
+    } else {
+        ui.run()
+    }
 }

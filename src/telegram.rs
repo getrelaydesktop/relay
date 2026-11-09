@@ -7,7 +7,11 @@ use std::{
     collections::{HashMap, HashSet},
     env, fs,
     path::PathBuf,
-    sync::{Arc, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::Duration,
 };
@@ -20,7 +24,7 @@ pub const TG_API_HASH: &str = match option_env!("TG_API_HASH") {
 };
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TgMessage {
     pub id: i32,
     pub date: String,
@@ -31,6 +35,12 @@ pub struct TgMessage {
     pub outgoing: bool,
     pub channel_post: bool,
     pub service: bool,
+    pub sender: String,
+    pub reply_to: i32,
+    pub reply_quote: String,
+    pub reply_external: bool,
+    pub photo_width: i32,
+    pub photo_height: i32,
 }
 #[derive(Debug, Clone)]
 pub struct TgDialog {
@@ -43,6 +53,8 @@ pub struct TgDialog {
     pub saved: bool,
     pub channel: ChannelAccess,
     pub messages: Vec<TgMessage>,
+    pub presence: String,
+    pub online: bool,
 }
 #[derive(Debug, Clone, Copy)]
 pub enum ChannelAccess {
@@ -76,6 +88,26 @@ pub struct TgFolder {
 }
 #[derive(Debug, Clone)]
 pub enum TgEvent {
+    Presence {
+        peer_id: i32,
+        text: String,
+        online: bool,
+    },
+    Thumbnail {
+        peer_id: i32,
+        message_id: i32,
+        pixels: Option<image::RgbaImage>,
+    },
+    ReplyResolved {
+        peer_id: i32,
+        message_id: i32,
+        original: Option<TgMessage>,
+    },
+    JumpReady {
+        peer_id: i32,
+        message_id: i32,
+        messages: Vec<TgMessage>,
+    },
     Qr {
         matrix: String,
     },
@@ -169,6 +201,9 @@ pub enum TgEvent {
     },
 }
 pub(crate) enum TgCommand {
+    Thumbnail(i32, i32),
+    ResolveReply(i32, i32),
+    JumpReply(i32, i32),
     StartQr,
     CancelQr,
     SendCode(String),
@@ -193,16 +228,58 @@ pub(crate) enum TgCommand {
 pub struct TelegramBridge {
     commands: async_mpsc::UnboundedSender<TgCommand>,
     events: mpsc::Receiver<TgEvent>,
-    errors: mpsc::Sender<TgEvent>,
+    errors: EventSink,
+}
+
+type Wake = Box<dyn Fn() + Send + Sync>;
+#[derive(Clone)]
+pub struct EventSink {
+    tx: mpsc::Sender<TgEvent>,
+    wake: Arc<Mutex<Option<Wake>>>,
+    notified: Arc<AtomicBool>,
+}
+impl EventSink {
+    fn new(tx: mpsc::Sender<TgEvent>) -> Self {
+        Self {
+            tx,
+            wake: Default::default(),
+            notified: Default::default(),
+        }
+    }
+    pub fn send(&self, event: TgEvent) -> std::result::Result<(), mpsc::SendError<TgEvent>> {
+        self.tx.send(event)?;
+        if !self.notified.swap(true, Ordering::AcqRel) {
+            if let Some(wake) = self.wake.lock().unwrap().as_ref() {
+                wake();
+            }
+        }
+        Ok(())
+    }
 }
 impl TelegramBridge {
+    pub fn notify_with(&self, wake: impl Fn() + Send + Sync + 'static) {
+        *self.errors.wake.lock().unwrap() = Some(Box::new(wake));
+        self.errors.notified.store(false, Ordering::Release);
+        if let Some(wake) = self.errors.wake.lock().unwrap().as_ref() {
+            wake();
+        }
+    }
+    pub fn begin_poll(&self) {
+        self.errors.notified.store(false, Ordering::Release);
+    }
+    pub fn thumbnail(&self, peer: i32, id: i32) {
+        self.send(TgCommand::Thumbnail(peer, id));
+    }
+    pub fn resolve_reply(&self, peer: i32, id: i32) {
+        self.send(TgCommand::ResolveReply(peer, id));
+    }
+    pub fn jump_reply(&self, peer: i32, id: i32) {
+        self.send(TgCommand::JumpReply(peer, id));
+    }
     #[cfg(test)]
-    pub fn offline_for_rendering() -> (
-        Self,
-        async_mpsc::UnboundedReceiver<TgCommand>,
-        mpsc::Sender<TgEvent>,
-    ) {
-        let (errors, events) = mpsc::channel();
+    pub fn offline_for_rendering() -> (Self, async_mpsc::UnboundedReceiver<TgCommand>, EventSink) {
+        let (tx, events) = mpsc::channel();
+        let errors = EventSink::new(tx);
         let (commands, receiver) = async_mpsc::unbounded_channel();
         (
             Self {
@@ -217,6 +294,7 @@ impl TelegramBridge {
 
     pub fn spawn() -> Self {
         let (tx, events) = mpsc::channel();
+        let tx = EventSink::new(tx);
         let (commands, rx) = async_mpsc::unbounded_channel();
         let errors = tx.clone();
         thread::spawn(move || {
@@ -322,7 +400,7 @@ impl TelegramBridge {
         self.send(TgCommand::Logout);
     }
 }
-fn report(tx: &mpsc::Sender<TgEvent>, error: impl std::fmt::Display) {
+fn report(tx: &EventSink, error: impl std::fmt::Display) {
     let _ = tx.send(TgEvent::Error {
         message: error.to_string(),
     });
@@ -345,6 +423,16 @@ fn initials(name: &str) -> String {
 }
 fn message(m: &grammers_client::message::Message) -> TgMessage {
     let media = m.media();
+    let (photo_width, photo_height) = media_dimensions(media.as_ref());
+    let (reply_quote, reply_external) = match m.reply_header() {
+        Some(tl::enums::MessageReplyHeader::Header(header)) => (
+            header.quote_text.unwrap_or_default(),
+            header
+                .reply_to_peer_id
+                .is_some_and(|peer| grammers_session::types::PeerId::from(peer) != m.peer_id()),
+        ),
+        _ => (String::new(), false),
+    };
     let label = match &media {
         Some(grammers_client::media::Media::Photo(_)) if m.text().is_empty() => "Фото".to_owned(),
         Some(grammers_client::media::Media::Photo(_)) => String::new(),
@@ -358,6 +446,16 @@ fn message(m: &grammers_client::message::Message) -> TgMessage {
         None => String::new(),
     };
     TgMessage {
+        sender: m
+            .sender()
+            .and_then(|sender| sender.name())
+            .unwrap_or("Удалённый аккаунт")
+            .to_owned(),
+        reply_to: m.reply_to_message_id().unwrap_or_default(),
+        reply_quote,
+        reply_external,
+        photo_width,
+        photo_height,
         id: m.id(),
         date: m
             .date()
@@ -413,7 +511,7 @@ struct LoginToken {
 struct Worker {
     client: Client,
     session: Arc<SqliteSession>,
-    tx: mpsc::Sender<TgEvent>,
+    tx: EventSink,
     login: Option<LoginToken>,
     password: Option<PasswordToken>,
     qr: bool,
@@ -423,6 +521,8 @@ struct Worker {
     avatar_requests: HashSet<i32>,
     avatar_slots: Arc<tokio::sync::Semaphore>,
     avatar_tasks: tokio::task::JoinSet<()>,
+    detail_slots: Arc<tokio::sync::Semaphore>,
+    online_until: HashMap<i32, i64>,
     folder_defs: Vec<tl::enums::DialogFilter>,
     folder_dialogs: Vec<(i32, grammers_client::peer::Dialog)>,
 }
@@ -474,6 +574,34 @@ fn filter_contains(f: &tl::enums::DialogFilter, d: &grammers_client::peer::Dialo
     }
 }
 impl Worker {
+    fn presence_update(&mut self, user_id: i64, status: tl::enums::UserStatus) {
+        let now = chrono::Utc::now().timestamp();
+        for (&id, peer) in &self.peers {
+            if peer.id.kind() == grammers_session::types::PeerKind::User
+                && peer.id.bare_id_unchecked() == user_id
+            {
+                self.online_until.remove(&id);
+                if let tl::enums::UserStatus::Online(value) = &status {
+                    if i64::from(value.expires) > now {
+                        self.online_until.insert(id, i64::from(value.expires));
+                    }
+                }
+                let (text, online) = crate::presence::describe(&status, now);
+                let _ = self.tx.send(TgEvent::Presence {
+                    peer_id: id,
+                    text,
+                    online,
+                });
+            }
+        }
+    }
+    fn track_presence(&mut self, id: i32, peer: &grammers_client::peer::Peer) {
+        if let grammers_client::peer::Peer::User(user) = peer {
+            if let tl::enums::UserStatus::Online(value) = user.status() {
+                self.online_until.insert(id, i64::from(value.expires));
+            }
+        }
+    }
     fn load_avatar(&mut self, id: i32) {
         if id == 3 || self.avatar_requests.contains(&id) {
             return;
@@ -585,6 +713,7 @@ impl Worker {
         let id = self.peers.keys().max().copied().unwrap_or(10) + 1;
         self.peers.insert(id, reference);
         self.avatar_peers.insert(id, peer.clone());
+        self.track_presence(id, peer);
         let title = peer.name().unwrap_or("Chat").to_owned();
         let _ = self.tx.send(TgEvent::DialogAdded {
             dialog: TgDialog {
@@ -601,6 +730,8 @@ impl Worker {
                 saved: false,
                 channel: ChannelAccess::for_peer(peer),
                 messages: vec![],
+                presence: crate::presence::for_peer(peer).0,
+                online: crate::presence::for_peer(peer).1,
             },
         });
         Ok(id)
@@ -701,6 +832,7 @@ impl Worker {
             let id = if saved { 3 } else { 10 + dialogs.len() as i32 };
             self.peers.insert(id, d.peer_ref());
             self.avatar_peers.insert(id, d.peer().clone());
+            self.track_presence(id, d.peer());
             self.folder_dialogs.push((id, d.clone()));
             let title = if saved {
                 "Saved Messages"
@@ -726,6 +858,8 @@ impl Worker {
                 saved,
                 channel: ChannelAccess::for_peer(d.peer()),
                 messages: d.last_message.as_ref().map(message).into_iter().collect(),
+                presence: crate::presence::for_peer(d.peer()).0,
+                online: crate::presence::for_peer(d.peer()).1,
             });
         }
         let _ = self.tx.send(TgEvent::Authorized {
@@ -747,6 +881,97 @@ impl Worker {
     }
     async fn command(&mut self, cmd: TgCommand) -> Result<()> {
         match cmd {
+            TgCommand::Thumbnail(id, mid) | TgCommand::ResolveReply(id, mid) => {
+                let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
+                let thumbnail = matches!(cmd, TgCommand::Thumbnail(..));
+                let client = self.client.clone();
+                let tx = self.tx.clone();
+                let slots = self.detail_slots.clone();
+                self.avatar_tasks.spawn(async move {
+                    let Ok(_permit) = slots.acquire().await else {
+                        return;
+                    };
+                    let result = tokio::time::timeout(Duration::from_secs(25), async {
+                        let source = client
+                            .get_messages_by_id(peer, &[mid])
+                            .await?
+                            .into_iter()
+                            .flatten()
+                            .next()
+                            .ok_or("Сообщение недоступно")?;
+                        if thumbnail {
+                            let pixels = thumbnail_image(&client, &source).await?;
+                            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(TgEvent::Thumbnail {
+                                peer_id: id,
+                                message_id: mid,
+                                pixels: Some(pixels),
+                            })
+                        } else {
+                            let original = source.get_reply().await?.as_ref().map(message);
+                            Ok(TgEvent::ReplyResolved {
+                                peer_id: id,
+                                message_id: mid,
+                                original,
+                            })
+                        }
+                    })
+                    .await;
+                    let event = result
+                        .ok()
+                        .and_then(|result| result.ok())
+                        .unwrap_or_else(|| {
+                            if thumbnail {
+                                TgEvent::Thumbnail {
+                                    peer_id: id,
+                                    message_id: mid,
+                                    pixels: None,
+                                }
+                            } else {
+                                TgEvent::ReplyResolved {
+                                    peer_id: id,
+                                    message_id: mid,
+                                    original: None,
+                                }
+                            }
+                        });
+                    let _ = tx.send(event);
+                });
+            }
+            TgCommand::JumpReply(id, mid) => {
+                let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
+                let source = self
+                    .client
+                    .get_messages_by_id(peer, &[mid])
+                    .await?
+                    .into_iter()
+                    .flatten()
+                    .next()
+                    .ok_or("Сообщение удалено")?;
+                let original = source
+                    .get_reply()
+                    .await?
+                    .ok_or("Исходное сообщение удалено или недоступно")?;
+                let target = match original.peer() {
+                    Some(peer) => self.register_peer(peer).await?,
+                    None => id,
+                };
+                let target_peer = *self.peers.get(&target).ok_or("Чат недоступен")?;
+                let mut iter = self
+                    .client
+                    .iter_messages(target_peer)
+                    .offset_id(original.id().saturating_add(20))
+                    .limit(40);
+                let mut messages = Vec::new();
+                while let Some(item) = iter.next().await? {
+                    messages.push(message(&item));
+                }
+                messages.reverse();
+                let _ = self.tx.send(TgEvent::JumpReady {
+                    peer_id: target,
+                    message_id: original.id(),
+                    messages,
+                });
+            }
             TgCommand::LoadAvatar(id) => {
                 self.load_avatar(id);
             }
@@ -826,6 +1051,7 @@ impl Worker {
                     .unwrap_or_else(|| self.peers.keys().max().copied().unwrap_or(10) + 1);
                 self.peers.insert(id, reference);
                 self.avatar_peers.insert(id, peer.clone());
+                self.track_presence(id, &peer);
                 let title = peer.name().unwrap_or(name).to_owned();
                 let _ = self.tx.send(TgEvent::DialogOpened {
                     dialog: TgDialog {
@@ -842,6 +1068,8 @@ impl Worker {
                         saved: false,
                         channel: ChannelAccess::for_peer(&peer),
                         messages: vec![],
+                        presence: crate::presence::for_peer(&peer).0,
+                        online: crate::presence::for_peer(&peer).1,
                     },
                 });
             }
@@ -1170,6 +1398,74 @@ impl Worker {
         Ok(())
     }
 }
+fn media_dimensions(media: Option<&grammers_client::media::Media>) -> (i32, i32) {
+    use grammers_client::media::Media;
+    match media {
+        Some(Media::Photo(photo)) => match &photo.raw.photo {
+            Some(tl::enums::Photo::Photo(photo)) => photo
+                .sizes
+                .iter()
+                .filter_map(|size| match size {
+                    tl::enums::PhotoSize::Size(size) => Some((size.w, size.h)),
+                    tl::enums::PhotoSize::PhotoCachedSize(size) => Some((size.w, size.h)),
+                    tl::enums::PhotoSize::Progressive(size) => Some((size.w, size.h)),
+                    _ => None,
+                })
+                .max_by_key(|&(w, h)| i64::from(w) * i64::from(h))
+                .unwrap_or((320, 240)),
+            _ => (320, 240),
+        },
+        Some(Media::Document(document)) => match &document.raw.document {
+            Some(tl::enums::Document::Document(document)) => document
+                .attributes
+                .iter()
+                .find_map(|attribute| match attribute {
+                    tl::enums::DocumentAttribute::ImageSize(size) => Some((size.w, size.h)),
+                    _ => None,
+                })
+                .unwrap_or((320, 240)),
+            _ => (320, 240),
+        },
+        _ => (320, 240),
+    }
+}
+
+async fn thumbnail_image(
+    client: &Client,
+    message: &grammers_client::message::Message,
+) -> Result<image::RgbaImage> {
+    use grammers_client::media::Media;
+    let media = message.media().ok_or("Фото недоступно")?;
+    let thumbs = match &media {
+        Media::Photo(photo) => photo.thumbs(),
+        Media::Document(doc) => doc.thumbs(),
+        _ => vec![],
+    };
+    let thumb = thumbs
+        .into_iter()
+        .filter(|thumb| thumb.size() > 0 && thumb.size() <= 3 * 1024 * 1024)
+        .min_by_key(|thumb| match thumb.photo_type().as_str() {
+            "x" => 0,
+            "y" => 1,
+            "m" => 2,
+            "w" => 3,
+            "s" => 4,
+            _ => 5,
+        });
+    let pixels = if let Some(thumb) = thumb {
+        download_image(client, &thumb, 3 * 1024 * 1024, 8192).await?
+    } else {
+        download_image(client, &media, 4 * 1024 * 1024, 8192).await?
+    };
+    tokio::task::spawn_blocking(move || {
+        image::DynamicImage::ImageRgba8(pixels)
+            .resize(960, 960, image::imageops::FilterType::Lanczos3)
+            .into_rgba8()
+    })
+    .await
+    .map_err(Into::into)
+}
+
 async fn fetch_photo(client: Client, peer: PeerRef, mid: i32) -> Result<image::RgbaImage> {
     let message = client
         .get_messages_by_id(peer, &[mid])
@@ -1208,10 +1504,7 @@ async fn download_image(
     })
     .await?
 }
-async fn run(
-    mut commands: async_mpsc::UnboundedReceiver<TgCommand>,
-    tx: mpsc::Sender<TgEvent>,
-) -> Result<()> {
+async fn run(mut commands: async_mpsc::UnboundedReceiver<TgCommand>, tx: EventSink) -> Result<()> {
     let dir = config_dir();
     fs::create_dir_all(&dir)?;
     let session = Arc::new(SqliteSession::open(dir.join("telegram-native.session")).await?);
@@ -1242,6 +1535,8 @@ async fn run(
         avatar_requests: HashSet::new(),
         avatar_slots: Arc::new(tokio::sync::Semaphore::new(4)),
         avatar_tasks: tokio::task::JoinSet::new(),
+        detail_slots: Arc::new(tokio::sync::Semaphore::new(3)),
+        online_until: HashMap::new(),
         folder_defs: vec![],
         folder_dialogs: vec![],
     };
@@ -1262,7 +1557,16 @@ async fn run(
     let mut tick = tokio::time::interval(Duration::from_secs(5));
     tick.tick().await;
     loop {
+        let deadline = w.online_until.values().min().copied();
+        let delay = deadline
+            .map(|at| (at - chrono::Utc::now().timestamp()).max(0) as u64)
+            .unwrap_or(86400);
         tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(delay)), if deadline.is_some() => {
+                let now = chrono::Utc::now().timestamp();
+                let expired: Vec<_> = w.online_until.iter().filter_map(|(&id, &until)| (until <= now).then_some(id)).collect();
+                for id in expired { w.online_until.remove(&id); let _ = tx.send(TgEvent::Presence { peer_id: id, text: "не в сети".into(), online: false }); }
+            }
             _ = w.avatar_tasks.join_next(), if !w.avatar_tasks.is_empty() => {}
             cmd = commands.recv() => {
                 let Some(cmd) = cmd else { break };
@@ -1282,6 +1586,9 @@ async fn run(
                 }
             }
             update = updates.next() => match update {
+                Ok(Update::Raw(raw)) if matches!(&raw.raw, tl::enums::Update::UserStatus(_)) => {
+                    if let tl::enums::Update::UserStatus(update) = raw.raw { w.presence_update(update.user_id, update.status); }
+                }
                 Ok(Update::NewMessage(m)) => {
                     let known = w.peers.iter().find_map(|(&id, p)| (p.id == m.peer_id()).then_some(id));
                     let id = match known { Some(id) => Some(id), None => match m.peer() { Some(peer) => match w.register_peer(peer).await { Ok(id) => Some(id), Err(e) => { report(&tx, e); None } }, None => None } };

@@ -4186,6 +4186,7 @@ dependencies = [
  "slint-build",
  "tiny-skia 0.12.0",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

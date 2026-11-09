@@ -40,6 +40,7 @@ pub fn acknowledge(rows: &VecModel<MessageRow>, local_id: i32, mut sent: Message
         }
         if let Some(index) = rows.iter().position(|row| row.id == local_id) {
             sent.send_token = local.send_token;
+            crate::details::retain(&mut sent, &local);
             rows.set_row_data(index, sent);
         }
     }
@@ -57,8 +58,7 @@ pub fn merge_history(rows: &VecModel<MessageRow>, mut history: Vec<MessageRow>) 
     // in earlier messages. Replacing the entire model would cut off a flight.
     for (index, row) in history.iter_mut().enumerate() {
         if let Some(old) = rows.row_data(index).filter(|old| old.id == row.id) {
-            row.send_token = old.send_token;
-            row.receive_token = old.receive_token;
+            crate::details::retain(row, &old);
             if old != *row {
                 rows.set_row_data(index, row.clone());
             }
