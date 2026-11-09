@@ -31,6 +31,11 @@ jobs:
         run: rustup toolchain install stable --profile minimal --no-self-update
       - name: Select Rust stable
         run: rustup default stable
+      - name: Restore and save Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-x64-${{ matrix.profile }}
+          cache-on-failure: true
       - name: Build
         shell: pwsh
         run: |
