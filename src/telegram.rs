@@ -342,7 +342,10 @@ fn message(m: &grammers_client::message::Message) -> TgMessage {
         is_photo: matches!(&media, Some(grammers_client::media::Media::Photo(_)))
             || matches!(&media, Some(grammers_client::media::Media::Document(d)) if d.mime_type().is_some_and(|m| m.starts_with("image/"))),
         body: match (label.is_empty(), m.text().is_empty()) {
-            (true, _) => m.action().map(service_text).unwrap_or_else(|| m.text().into()),
+            (true, _) => m
+                .action()
+                .map(service_text)
+                .unwrap_or_else(|| m.text().into()),
             (false, true) => label,
             _ => format!("{label}\n{}", m.text()),
         },
@@ -367,7 +370,9 @@ fn service_text(action: &tl::enums::MessageAction) -> String {
         MessageAction::ChatDeletePhoto => "Фото чата удалено".into(),
         MessageAction::ChatAddUser(_) => "Добавлен участник".into(),
         MessageAction::ChatDeleteUser(_) => "Участник покинул чат".into(),
-        MessageAction::ChatJoinedByLink(_) | MessageAction::ChatJoinedByRequest => "Новый участник в группе".into(),
+        MessageAction::ChatJoinedByLink(_) | MessageAction::ChatJoinedByRequest => {
+            "Новый участник в группе".into()
+        }
         MessageAction::PinMessage => "Сообщение закреплено".into(),
         MessageAction::HistoryClear => "История очищена".into(),
         MessageAction::ContactSignUp => "Контакт присоединился к Telegram".into(),

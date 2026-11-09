@@ -5,62 +5,66 @@ use slint::platform::{Platform, PlatformError, WindowAdapter, WindowEvent};
 use slint::{LogicalPosition, PhysicalSize, Rgba8Pixel};
 use std::cell::Cell;
 
-slint::slint! {
-    import { VectorIcon } from "../ui/icons/vector-icons.slint";
-    import { Motion, RippleSurface, PopupReveal } from "../ui/motion.slint";
-    export component AnimationProbe inherits Window {
-        background: #000000;
-        in-out property <bool> pressed;
-        in-out property <length> press-x: 8px;
-        in-out property <bool> popup-open;
-        out property <float> toggle-progress: toggle.value;
-        out property <float> popup-progress: popup.show-progress;
-        out property <float> popup-width: popup.width / 180px;
-        out property <float> popup-height: popup.height / 100px;
-        out property <float> popup-opacity: popup.opacity;
-        toggle := Motion { target: root.pressed ? 1 : 0; duration: 120ms; }
-        RippleSurface {
-            x: 20px; y: 20px; width: 180px; height: 48px;
-            border-radius: 24px;
-            pressed: root.pressed; press-x: root.press-x; press-y: 24px;
-            ink: #ffffff;
-        }
-        popup := PopupReveal {
-            x: 20px; y: 0px;
-            shown: root.popup-open; content-width: 180px; content-height: 100px;
-            fill: #17212b;
-            Text { text: "Telegram popup"; color: #ffffff; font-size: 14px; }
-        }
-    }
-    export component IconAtlas inherits Window {
-        background: #17212b;
-        out property <[string]> icons: [
-            "advanced", "back", "call", "channel", "chat-settings", "chats",
-            "clip", "close", "edit-folders", "folder", "groups_create", "language",
-            "maximize", "menu", "mic", "minimize", "moon", "more",
-            "notifications", "panel", "personal", "phone", "power", "privacy",
-            "profile", "read", "saved", "search", "send", "sent",
-            "settings", "smile", "window-close"
-        ];
-        for icon[index] in root.icons: Rectangle {
-            x: mod(index, 6) * 100px;
-            y: floor(index / 6) * 72px;
-            width: 100px;
-            height: 72px;
-            VectorIcon {
-                x: (parent.width - self.width) / 2;
-                y: 6px;
-                name: icon;
-                tint: #9cb6ca;
+mod probes {
+    slint::slint! {
+        import { VectorIcon } from "../ui/icons/vector-icons.slint";
+        import { Motion, RippleSurface, PopupReveal } from "../ui/motion.slint";
+        export { TelegramMotion } from "../ui/motion.slint";
+        export component AnimationProbe inherits Window {
+            background: #000000;
+            in-out property <bool> pressed;
+            in-out property <length> press-x: 8px;
+            in-out property <bool> popup-open;
+            out property <float> toggle-progress: toggle.value;
+            out property <float> popup-progress: popup.show-progress;
+            out property <float> popup-width: popup.width / 180px;
+            out property <float> popup-height: popup.height / 100px;
+            out property <float> popup-opacity: popup.opacity;
+            toggle := Motion { target: root.pressed ? 1 : 0; duration: 120ms; }
+            RippleSurface {
+                x: 20px; y: 20px; width: 180px; height: 48px;
+                border-radius: 24px;
+                pressed: root.pressed; press-x: root.press-x; press-y: 24px;
+                ink: #ffffff;
             }
-            Text {
-                x: 0px; y: 50px; width: parent.width; height: 20px;
-                text: icon; color: #9cb6ca; font-size: 10px;
-                horizontal-alignment: center;
+            popup := PopupReveal {
+                x: 20px; y: 0px;
+                shown: root.popup-open; content-width: 180px; content-height: 100px;
+                fill: #17212b;
+                Text { text: "Telegram popup"; color: #ffffff; font-size: 14px; }
+            }
+        }
+        export component IconAtlas inherits Window {
+            background: #17212b;
+            out property <[string]> icons: [
+                "advanced", "back", "call", "channel", "chat-settings", "chats",
+                "clip", "close", "edit-folders", "folder", "groups_create", "language",
+                "maximize", "menu", "mic", "minimize", "moon", "more",
+                "notifications", "panel", "personal", "phone", "power", "privacy",
+                "profile", "read", "saved", "search", "send", "sent",
+                "settings", "smile", "window-close"
+            ];
+            for icon[index] in root.icons: Rectangle {
+                x: mod(index, 6) * 100px;
+                y: floor(index / 6) * 72px;
+                width: 100px;
+                height: 72px;
+                VectorIcon {
+                    x: (parent.width - self.width) / 2;
+                    y: 6px;
+                    name: icon;
+                    tint: #9cb6ca;
+                }
+                Text {
+                    x: 0px; y: 50px; width: parent.width; height: 20px;
+                    text: icon; color: #9cb6ca; font-size: 10px;
+                    horizontal-alignment: center;
+                }
             }
         }
     }
 }
+use probes::{AnimationProbe, IconAtlas};
 
 struct PreviewPlatform(Rc<PreviewWindow>);
 
@@ -370,6 +374,9 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     drop(atlas);
 
     let probe = AnimationProbe::new().unwrap();
+    probe
+        .global::<probes::TelegramMotion>()
+        .on_append_ripple(append_ripple);
     probe.show().unwrap();
     window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
     window.window.set_size(PhysicalSize::new(240, 100));
@@ -402,7 +409,16 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     window.advance(0);
     window.take_snapshot().unwrap();
     window.advance(30);
-    save_animation_frame("ripple-overlap", &window.take_snapshot().unwrap());
+    let pixels = window.take_snapshot().unwrap();
+    assert!(
+        pixels.as_slice()[44 * 240 + 28].r > 0,
+        "the first wave must keep fading after a second press"
+    );
+    assert!(
+        pixels.as_slice()[44 * 240 + 140].r > 0,
+        "the second wave must expand from the new pointer location"
+    );
+    save_animation_frame("ripple-overlap", &pixels);
     probe.set_pressed(false);
     window.advance(0);
     window.take_snapshot().unwrap();
@@ -467,6 +483,8 @@ fn verify_telegram_motion(window: &PreviewWindow, ui: &Desktop) {
     ui.global::<Theme>().set_dark(true);
     ui.set_chat_menu_open(false);
     ui.set_menu_open(false);
+    window.advance(0);
+    window.take_snapshot().unwrap();
     window.advance(500);
     window.take_snapshot().unwrap();
 

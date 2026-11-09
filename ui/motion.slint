@@ -2,6 +2,8 @@
 // Exact source locations and parameters: docs/telegram-animations.md.
 export global TelegramMotion {
     in-out property <bool> enabled: true;
+    // Appending to a persistent model retains live wave delegates and clocks.
+    callback append-ripple([int], int) -> [int];
     out property <duration> box-duration: 200ms;
     out property <duration> slide-duration: 240ms;
     out property <length> slide-shift: 100px;
@@ -113,19 +115,25 @@ export component RippleSurface inherits Rectangle {
     in property <length> press-x;
     in property <length> press-y;
     in property <color> ink;
-    private property <int> wave-count: 0;
+    private property <[int]> waves;
+    private property <int> generation: 0;
     clip: true;
-    changed pressed => { if root.pressed { root.wave-count += 1; } }
-    for index in root.wave-count : RippleWave {
-        held: root.pressed && index == root.wave-count - 1;
+    changed pressed => {
+        if root.pressed {
+            root.generation += 1;
+            root.waves = TelegramMotion.append-ripple(root.waves, root.generation);
+        }
+    }
+    for wave in root.waves : RippleWave {
+        held: root.pressed && wave == root.generation;
         origin-x: root.press-x;
         origin-y: root.press-y;
         ink: root.ink;
     }
     Timer {
-        running: root.wave-count > 0 && !root.pressed;
+        running: root.waves.length > 0 && !root.pressed;
         interval: TelegramMotion.ripple-hide-duration;
-        triggered => { root.wave-count = 0; }
+        triggered => { root.waves = []; }
     }
 }
 
