@@ -8,7 +8,7 @@ use std::cell::Cell;
 mod probes {
     slint::slint! {
         import { VectorIcon } from "../ui/icons/vector-icons.slint";
-        import { Motion, MessageSendMotion, RippleSurface, PopupReveal } from "../ui/motion.slint";
+        import { Motion, MessageSendMotion, MessageReceiveMotion, RippleSurface, PopupReveal } from "../ui/motion.slint";
         export { TelegramMotion } from "../ui/motion.slint";
         export component AnimationProbe inherits Window {
             background: #000000;
@@ -16,6 +16,9 @@ mod probes {
             in-out property <length> press-x: 8px;
             in-out property <bool> popup-open;
             in-out property <int> send-token;
+            in-out property <int> receive-token;
+            out property <float> receive-progress: receive.progress;
+            receive := MessageReceiveMotion { token: root.receive-token; }
             out property <float> send-progress: send.progress;
             out property <float> send-horizontal: send.horizontal;
             out property <float> send-rise: send.rise;
@@ -321,6 +324,8 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     }
     verify_telegram_motion(&window, &ui);
     verify_sending(&window, &ui);
+    verify_incoming(&window, &ui);
+    verify_context_menu(&window, &ui);
     ui.hide().unwrap();
     drop(ui);
 
@@ -388,6 +393,9 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     probe
         .global::<probes::TelegramMotion>()
         .on_claim_send(|_| true);
+    probe
+        .global::<probes::TelegramMotion>()
+        .on_claim_receive(|_| true);
     probe
         .global::<probes::TelegramMotion>()
         .on_append_ripple(append_ripple);
@@ -514,7 +522,355 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     window.take_snapshot().unwrap();
     assert_eq!(probe.get_send_progress(), 1.0);
     assert_eq!(probe.get_send_rise(), 1.0);
+    probe.set_receive_token(-2001);
+    window.advance(0);
+    window.take_snapshot().unwrap();
+    assert_eq!(probe.get_receive_progress(), 0.0);
+    window.advance(30);
+    window.take_snapshot().unwrap();
+    assert!((probe.get_receive_progress() - 0.67232).abs() < 0.002);
+    window.advance(45);
+    window.take_snapshot().unwrap();
+    assert!((probe.get_receive_progress() - 0.96875).abs() < 0.002);
+    window.advance(75);
+    window.take_snapshot().unwrap();
+    assert_eq!(probe.get_receive_progress(), 1.0);
     probe.hide().unwrap();
+}
+
+fn verify_incoming(window: &PreviewWindow, ui: &Desktop) {
+    let (bridge, _commands, events) = telegram::TelegramBridge::offline_for_rendering();
+    let mut state = Demo::with_bridge(bridge);
+    state.live_mode = true;
+    let today = chrono::Local::now().format("%d.%m.%Y").to_string();
+    for chat in &state.chats {
+        for index in 0..chat.messages.row_count() {
+            let mut row = chat.messages.row_data(index).unwrap();
+            row.id = index as i32 + 1;
+            row.date = today.clone().into();
+            chat.messages.set_row_data(index, row);
+        }
+    }
+    ui.set_draft(Default::default());
+    ui.set_reply_message(0);
+    ui.set_message_busy(false);
+    state.refresh_chats(ui);
+    state.refresh_history(ui);
+    window.advance(0);
+    window.take_snapshot().unwrap();
+    window.advance(500);
+    window.take_snapshot().unwrap();
+    assert!(ui.get_history_at_bottom());
+    let incoming = telegram::TgMessage {
+        id: 101,
+        date: today.clone(),
+        has_media: false,
+        is_photo: false,
+        body: "Входящее сообщение плавно появляется снизу, сдвигая переписку".into(),
+        time: "12:31".into(),
+        outgoing: false,
+        channel_post: false,
+        service: false,
+    };
+    let count = state.chats[0].messages.row_count();
+    events
+        .send(telegram::TgEvent::NewMessage {
+            peer_id: 0,
+            message: incoming.clone(),
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    let token = state.chats[0]
+        .messages
+        .row_data(count)
+        .unwrap()
+        .receive_token;
+    assert_ne!(token, 0, "new visible incoming messages must animate");
+    window.advance(0);
+    save_animation_frame("receive-0", &window.take_snapshot().unwrap());
+    window.advance(30);
+    save_animation_frame("receive-30", &window.take_snapshot().unwrap());
+    // Duplicate updates preserve the live delegate and cannot restart it.
+    events
+        .send(telegram::TgEvent::NewMessage {
+            peer_id: 0,
+            message: incoming.clone(),
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    assert_eq!(state.chats[0].messages.row_count(), count + 1);
+    assert_eq!(
+        state.chats[0]
+            .messages
+            .row_data(count)
+            .unwrap()
+            .receive_token,
+        token
+    );
+    window.advance(45);
+    save_animation_frame("receive-75", &window.take_snapshot().unwrap());
+    window.advance(75);
+    save_animation_frame("receive-150", &window.take_snapshot().unwrap());
+    assert!(!ui.global::<TelegramMotion>().invoke_claim_receive(token));
+
+    // Loading existing history keeps the token, rather than replaying a reveal.
+    let rows = state.chats[0]
+        .messages
+        .iter()
+        .map(|mut row| {
+            row.receive_token = 0;
+            row
+        })
+        .collect();
+    sending::merge_history(&state.chats[0].messages, rows);
+    assert_eq!(
+        state.chats[0]
+            .messages
+            .row_data(count)
+            .unwrap()
+            .receive_token,
+        token
+    );
+
+    let history: Vec<_> = (0..30)
+        .map(|index| {
+            let mut row = message(
+                "Предыдущая переписка\nОстаётся на месте при получении нового сообщения",
+                "12:30",
+                index % 2 == 1,
+            );
+            row.id = index + 1;
+            row.date = today.clone().into();
+            row
+        })
+        .collect();
+    state.chats[0].messages.set_vec(history);
+    window.advance(500);
+    window.take_snapshot().unwrap();
+    ui.set_history_scroll_y(-160.0);
+    window.take_snapshot().unwrap();
+    assert!(!ui.get_history_at_bottom());
+    let offset = ui.get_history_scroll_y();
+    let mut another = incoming.clone();
+    another.id = 102;
+    events
+        .send(telegram::TgEvent::NewMessage {
+            peer_id: 0,
+            message: another,
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    window.advance(0);
+    window.take_snapshot().unwrap();
+    window.advance(200);
+    window.take_snapshot().unwrap();
+    assert!(
+        (ui.get_history_scroll_y() - offset).abs() < 0.01,
+        "incoming messages must not pull readers away from older history"
+    );
+    assert_eq!(
+        state.chats[0].messages.iter().last().unwrap().receive_token,
+        0
+    );
+
+    let unread = state.chats[1].row.unread;
+    events
+        .send(telegram::TgEvent::NewMessage {
+            peer_id: 1,
+            message: incoming,
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    assert_eq!(
+        state.chats[1].messages.iter().last().unwrap().receive_token,
+        0
+    );
+    assert_eq!(state.chats[1].row.unread, unread + 1);
+}
+
+fn verify_context_menu(window: &PreviewWindow, ui: &Desktop) {
+    ui.global::<Theme>().set_dark(true);
+    ui.set_emoji_open(false);
+    ui.set_chat_menu_open(false);
+    let rows: Vec<_> = (0..30)
+        .map(|index| {
+            let mut row = message(
+                "Сообщение для проверки меню\nПосле прокрутки и при разном масштабе",
+                "12:32",
+                index % 2 == 1,
+            );
+            row.id = index + 1;
+            row.date = "09.11.2026".into();
+            row
+        })
+        .collect();
+    ui.set_messages(ModelRc::new(VecModel::from(rows)));
+    let actions = Rc::new(RefCell::new(Vec::new()));
+    let received = Rc::clone(&actions);
+    let weak = ui.as_weak();
+    ui.on_message_action(move |action| {
+        received.borrow_mut().push((
+            action.to_string(),
+            weak.upgrade().unwrap().get_selected_message(),
+        ));
+    });
+    for (label, width, scale) in [
+        ("desktop", 1100, 1.0),
+        ("desktop-150", 1100, 1.5),
+        ("compact", 430, 1.0),
+    ] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        window.window.set_size(PhysicalSize::new(
+            (width as f32 * scale) as u32,
+            (720.0 * scale) as u32,
+        ));
+        window.advance(0);
+        window.take_snapshot().unwrap();
+        window.advance(500);
+        window.take_snapshot().unwrap();
+        ui.set_history_scroll_y(-250.0);
+        let pixels = window.take_snapshot().unwrap();
+        let left = if width < 740 { 0 } else { 398 };
+        for (corner, outgoing, bottom) in [
+            ("left", false, false),
+            ("bottom-left", false, true),
+            ("bottom-right", true, true),
+        ] {
+            let x = if outgoing { width - 35 } else { left + 60 };
+            let color = if outgoing {
+                [43, 82, 120]
+            } else {
+                [24, 37, 51]
+            };
+            let matches = |y: &u32| {
+                let index = ((*y as f32 * scale) as u32 * pixels.width()
+                    + (x as f32 * scale) as u32) as usize;
+                let p = pixels.as_slice()[index];
+                [p.r, p.g, p.b] == color
+            };
+            let y = if bottom {
+                (500..664).rev().find(matches)
+            } else {
+                (130..300).find(matches)
+            }
+            .expect("visible bubble under the test pointer");
+            let position = LogicalPosition::new(x as f32, y as f32);
+            window.dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: slint::platform::PointerEventButton::Right,
+            });
+            window.dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: slint::platform::PointerEventButton::Right,
+            });
+            window.advance(0);
+            window.take_snapshot().unwrap();
+            assert!(
+                ui.get_chat_menu_open(),
+                "right-click must open the message menu: {label}/{corner}"
+            );
+            let selected = ui.get_selected_message();
+            assert!(selected > 0);
+            let anchor_x = ui.get_chat_menu_x()
+                + if outgoing {
+                    ui.get_chat_menu_width()
+                } else {
+                    0.0
+                };
+            let anchor_y = ui.get_chat_menu_y()
+                + if bottom {
+                    ui.get_chat_menu_height()
+                } else {
+                    0.0
+                };
+            assert!(
+                (anchor_x - (x - left) as f32).abs() < 1.0,
+                "menu must start at the clicked bubble, including sidebar and scroll offsets: {label}/{corner}: {anchor_x} != {}",
+                x - left
+            );
+            assert!(
+                (anchor_y - (y - 26) as f32).abs() < 1.0,
+                "menu must account for titlebar and viewport scroll: {label}/{corner}: {anchor_y} != {}",
+                y - 26
+            );
+            window.advance(200);
+            save_animation_frame(
+                &format!("context-{label}-{corner}"),
+                &window.take_snapshot().unwrap(),
+            );
+            let end_x = ui.get_chat_menu_x()
+                + if outgoing {
+                    ui.get_chat_menu_width()
+                } else {
+                    0.0
+                };
+            let end_y = ui.get_chat_menu_y()
+                + if bottom {
+                    ui.get_chat_menu_height()
+                } else {
+                    0.0
+                };
+            assert!(
+                (end_x - anchor_x).abs() < 0.01 && (end_y - anchor_y).abs() < 0.01,
+                "the opening corner must stay fixed while the menu reveals"
+            );
+            assert!(
+                ui.get_chat_menu_x() >= 4.0
+                    && ui.get_chat_menu_x() + ui.get_chat_menu_width() <= (width - left - 4) as f32
+            );
+            assert!(
+                ui.get_chat_menu_y() >= 4.0
+                    && ui.get_chat_menu_y() + ui.get_chat_menu_height() <= 690.0
+            );
+            // The first action must operate on the clicked message.
+            let reply = LogicalPosition::new(
+                left as f32 + ui.get_chat_menu_x() + 40.0,
+                26.0 + ui.get_chat_menu_y() + 20.0,
+            );
+            window.dispatch_event(WindowEvent::PointerPressed {
+                position: reply,
+                button: slint::platform::PointerEventButton::Left,
+            });
+            window.dispatch_event(WindowEvent::PointerReleased {
+                position: reply,
+                button: slint::platform::PointerEventButton::Left,
+            });
+            assert_eq!(
+                actions.borrow().last(),
+                Some(&("reply".to_string(), selected))
+            );
+            assert!(!ui.get_chat_menu_open());
+            window.advance(0);
+            window.take_snapshot().unwrap();
+            window.advance(200);
+            window.take_snapshot().unwrap();
+        }
+        // The header button still anchors to the header, not the last message.
+        let position = LogicalPosition::new(width as f32 - 26.0, 53.0);
+        window.dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        window.dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        window.advance(0);
+        window.take_snapshot().unwrap();
+        window.advance(200);
+        window.take_snapshot().unwrap();
+        assert!(ui.get_chat_menu_open());
+        assert_eq!(ui.get_selected_message(), 0);
+        assert!((ui.get_chat_menu_x() - (width - left - 218 - 8) as f32).abs() < 1.0);
+        assert_eq!(ui.get_chat_menu_y(), 50.0);
+        ui.set_chat_menu_open(false);
+        window.advance(0);
+        window.take_snapshot().unwrap();
+        window.advance(200);
+        window.take_snapshot().unwrap();
+    }
 }
 
 fn verify_sending(window: &PreviewWindow, ui: &Desktop) {

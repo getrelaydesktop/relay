@@ -242,6 +242,7 @@ impl Demo {
         self.viewed_photo = None;
         ui.set_photo_open(false);
         ui.set_selected_message(0);
+        ui.set_chat_menu_open(false);
         ui.set_reply_message(0);
         ui.set_edit_message_id(0);
         ui.set_chat_query(Default::default());
@@ -731,14 +732,28 @@ impl Demo {
         incoming: bool,
     ) {
         let active = self.chats.get(self.active).map(|c| c.row.id) == Some(peer_id);
+        let reveal = incoming
+            && !msg.outgoing
+            && active
+            && ui.get_show_chat()
+            && ui.get_has_chat()
+            && !ui.get_auth_required()
+            && ui.get_history_at_bottom();
         if let Some(chat) = self.chats.iter_mut().find(|c| c.row.id == peer_id) {
             let index = chat.messages.iter().position(|m| m.id == msg.id);
             if let Some(i) = index {
                 let mut row = live_message(msg);
                 row.send_token = chat.messages.row_data(i).unwrap().send_token;
+                row.receive_token = chat.messages.row_data(i).unwrap().receive_token;
                 chat.messages.set_row_data(i, row);
             } else {
-                chat.messages.push(live_message(msg));
+                let mut row = live_message(msg);
+                if reveal {
+                    row.receive_token = self.next_local_id;
+                    self.next_local_id -= 1;
+                    ui.invoke_animate_received_message();
+                }
+                chat.messages.push(row);
             }
             if chat.messages.iter().last().is_some_and(|m| m.id == msg.id) {
                 chat.row.preview = chat_preview(&msg.body);
@@ -755,7 +770,9 @@ impl Demo {
             }
             self.refresh_chats(ui);
             if active {
-                self.refresh_history(ui);
+                // The persistent history model is already bound. Rebinding it
+                // used to force a jump to the bottom even while reading above.
+                ui.set_active_chat(self.chats[self.active].row.clone());
             }
         }
     }
@@ -824,6 +841,7 @@ fn slint_image(pixels: &image::RgbaImage) -> slint::Image {
 fn message(body: &str, time: &str, outgoing: bool) -> MessageRow {
     MessageRow {
         send_token: 0,
+        receive_token: 0,
         pending: false,
         failed: false,
         reply_to: 0,
@@ -842,6 +860,7 @@ fn message(body: &str, time: &str, outgoing: bool) -> MessageRow {
 fn live_message(m: &telegram::TgMessage) -> MessageRow {
     MessageRow {
         send_token: 0,
+        receive_token: 0,
         pending: false,
         failed: false,
         reply_to: 0,
@@ -867,6 +886,9 @@ fn install_rendering(ui: &Desktop) {
     let played_sends = Rc::new(RefCell::new(std::collections::HashSet::new()));
     ui.global::<TelegramMotion>()
         .on_claim_send(move |token| played_sends.borrow_mut().insert(token));
+    let played_receives = Rc::new(RefCell::new(std::collections::HashSet::new()));
+    ui.global::<TelegramMotion>()
+        .on_claim_receive(move |token| played_receives.borrow_mut().insert(token));
     ui.global::<TelegramMotion>()
         .on_append_ripple(append_ripple);
     ui.global::<TelegramMotion>()

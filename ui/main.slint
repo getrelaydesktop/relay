@@ -1,5 +1,5 @@
 import { VectorIcon } from "icons/vector-icons.slint";
-import { TelegramMotion, Motion, MessageSendMotion, PopupReveal, BoxOverlay, RippleSurface } from "motion.slint";
+import { TelegramMotion, Motion, MessageSendMotion, MessageReceiveMotion, PopupReveal, BoxOverlay, RippleSurface } from "motion.slint";
 import { ListView } from "list-view.slint";
 import { AuthScreen } from "auth.slint";
 import { SettingsHome } from "settings-home.slint";
@@ -30,6 +30,7 @@ export struct ChatRow {
 export struct MessageRow {
     id: int,
     send-token: int,
+    receive-token: int,
     pending: bool,
     failed: bool,
     reply-to: int,
@@ -253,7 +254,7 @@ component ChatTile inherits Rectangle {
 }
 
 component Bubble inherits Rectangle {
-    callback selected();
+    callback selected(length, length);
     callback photo-requested();
     callback retry-requested();
     in property <float> sending-mix: 1;
@@ -350,7 +351,7 @@ component Bubble inherits Rectangle {
         mouse-cursor: root.message.is-photo || root.message.failed ? MouseCursor.pointer : MouseCursor.default;
         pointer-event(event) => {
             if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
-                root.selected();
+                root.selected(self.mouse-x, self.mouse-y);
             }
         }
         clicked => {
@@ -465,6 +466,16 @@ export component Desktop inherits Window {
     in-out property <bool> menu-open: false;
     in-out property <bool> emoji-open: false;
     in-out property <bool> chat-menu-open: false;
+    private property <bool> message-menu: false;
+    private property <length> menu-point-x;
+    private property <length> menu-point-y;
+    // Coordinates are relative to the chat pane, independent of sidebar/DPI.
+    out property <length> chat-menu-x: chat-popup.x;
+    out property <length> chat-menu-y: chat-popup.y;
+    out property <length> chat-menu-width: chat-popup.width;
+    out property <length> chat-menu-height: chat-popup.height;
+    in-out property <length> history-scroll-y <=> history.viewport-y;
+    out property <bool> history-at-bottom: history.viewport-y <= min(0px, history.view-height - history.content-height) + 2px;
     property <int> emoji-tab: 0;
     out property <float> menu-progress: menu-motion.value;
     out property <float> settings-progress: settings-motion.value;
@@ -802,6 +813,7 @@ export component Desktop inherits Window {
                     label: "Chat menu";
                     clicked => {
                         root.selected-message = 0;
+                        root.message-menu = false;
                         root.chat-menu-open = !root.chat-menu-open;
                     }
                 }
@@ -907,7 +919,7 @@ export component Desktop inherits Window {
                     viewport-width: self.width;
                     viewport-height: content-height + flight-padding;
                     changed viewport-height => {
-                        if root.follow-sending { root.scroll-to-bottom(); }
+                        if root.follow-sending || root.follow-incoming { root.scroll-to-bottom(); }
                     }
                     history-items := VerticalLayout {
                         width: history.width;
@@ -917,6 +929,7 @@ export component Desktop inherits Window {
                         spacing: 0px;
                         for message[index] in root.messages : Rectangle {
                             sending := MessageSendMotion { token: message.send-token; }
+                            receiving := MessageReceiveMotion { token: message.receive-token; }
                             property <bool> date-start: index == 0 || root.messages[index - 1].date != message.date;
                             property <bool> group-start: date-start || root.messages[index - 1].outgoing != message.outgoing || root.messages[index - 1].service;
                             property <bool> group-end: index + 1 == root.messages.length || root.messages[index + 1].outgoing != message.outgoing || root.messages[index + 1].date != message.date || root.messages[index + 1].service;
@@ -924,7 +937,8 @@ export component Desktop inherits Window {
                             property <length> bottom-pad: index + 1 == root.messages.length ? 8px : 2px;
                             property <length> edge-pad: group-end && Theme.design == 0 ? 10px : 16px;
                             property <length> final-height: (message.service ? 28px : bubble.height) + top-offset + bottom-pad;
-                            property <length> hidden-height: final-height * (1 - sending.rise);
+                            property <length> send-hidden-height: final-height * (1 - sending.rise);
+                            property <length> hidden-height: final-height * (1 - sending.rise * receiving.progress);
                             property <length> final-y: history-items.y + self.y + history.viewport-y + top-offset - hidden-height;
                             width: history.width;
                             height: final-height - hidden-height;
@@ -963,10 +977,10 @@ export component Desktop inherits Window {
                                 // Entry's plain text starts at x=52px and y=14px
                                 // in the composer. Account for the bubble's text padding.
                                 x: final-x + (41px - final-x) * (1 - sending.horizontal);
-                                y: parent.top-offset - parent.hidden-height
+                                y: parent.top-offset - parent.send-hidden-height
                                     + (history.view-height + 6px - parent.final-y) * (1 - sending.rise);
                                 sending-mix: sending.mix;
-                                flight-running: sending.progress < 1;
+                                flight-running: sending.progress < 1 || receiving.progress < 1;
                                 message: message;
                                 is-read: root.active-chat.id == 3 || (message.id > 0 && message.id <= root.active-chat.read-outbox-max-id);
                                 group-start: parent.group-start;
@@ -974,11 +988,16 @@ export component Desktop inherits Window {
                                 available-width: min(430px, history.width - 48px);
                                 photo-requested => { root.view-photo(message.id); }
                                 retry-requested => { root.retry-message(message.id); }
-                                selected => {
+                                selected(pointer-x, pointer-y) => {
                                     root.selected-message = message.id;
                                     root.selected-body = message.body;
                                     root.selected-outgoing = message.outgoing;
                                     root.selected-media = message.has-media;
+                                    root.message-menu = true;
+                                    root.menu-point-x = history-mask.x + history.x + history.viewport-x
+                                        + history-items.x + parent.x + self.x + pointer-x;
+                                    root.menu-point-y = history-mask.y + history.y + history.viewport-y
+                                        + history-items.y + parent.y + self.y + pointer-y;
                                     root.chat-menu-open = true;
                                 }
                             }
@@ -1034,8 +1053,18 @@ export component Desktop inherits Window {
                 }
                 chat-popup := PopupReveal {
                     shown: root.chat-menu-open;
-                    x: max(4px, history.width - self.width - 8px);
-                    y: 50px;
+                    // Decide the opening corner using full menu dimensions;
+                    // anchor that corner throughout the reveal animation.
+                    from-right: !root.message-menu || root.menu-point-x + self.content-width > history.width - 4px;
+                    from-bottom: root.message-menu && root.menu-point-y + self.content-height > parent.height - 4px;
+                    property <length> final-x: root.message-menu
+                        ? clamp(root.menu-point-x - (self.from-right ? self.content-width : 0px), 4px, max(4px, history.width - self.content-width - 4px))
+                        : max(4px, history.width - self.content-width - 8px);
+                    property <length> final-y: root.message-menu
+                        ? clamp(root.menu-point-y - (self.from-bottom ? self.content-height : 0px), 4px, max(4px, parent.height - self.content-height - 4px))
+                        : 50px;
+                    x: final-x + (self.from-right ? self.content-width - self.width : 0px);
+                    y: final-y + (self.from-bottom ? self.content-height - self.height : 0px);
                     content-width: 218px;
                     content-height: menu-items.preferred-height + 8px;
                     fill: Theme.surface;
@@ -1714,6 +1743,16 @@ export component Desktop inherits Window {
 
     public function focus-composer() { composer.focus(); }
     private property <bool> follow-sending: false;
+    private property <bool> follow-incoming: false;
+    receive-timer := Timer {
+        running: root.follow-incoming;
+        interval: TelegramMotion.receive-duration;
+        triggered => { root.follow-incoming = false; }
+    }
+    public function animate-received-message() {
+        root.follow-incoming = true;
+        receive-timer.restart();
+    }
     follow-timer := Timer {
         running: root.follow-sending;
         interval: TelegramMotion.send-duration;

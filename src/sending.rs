@@ -58,6 +58,7 @@ pub fn merge_history(rows: &VecModel<MessageRow>, mut history: Vec<MessageRow>) 
     for (index, row) in history.iter_mut().enumerate() {
         if let Some(old) = rows.row_data(index).filter(|old| old.id == row.id) {
             row.send_token = old.send_token;
+            row.receive_token = old.receive_token;
             if old != *row {
                 rows.set_row_data(index, row.clone());
             }

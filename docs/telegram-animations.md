@@ -19,6 +19,7 @@ Relay. It does not add Telegram's missing screens or animated media assets.
 | Press ripples | Pointer origin, furthest-corner radius, 650 ms `easeOutQuint` expansion, linear 200 ms release fade; overlapping presses preserved | lib_ui `ui/effects/ripple_animation.cpp`, `ui/widgets/widgets.style` |
 | Auth input stroke | Linear color transition, 150 ms | lib_ui `ui/widgets/widgets.style` |
 | Sending text | 280 ms linear timeline; horizontal `easeOutQuint` over 160 ms; vertical cubic bezier `(0.25, 0.1, 0.25, 1)`; bubble mix over 110 ms; history reveal follows vertical progress | tdesktop `Telegram/SourceFiles/ui/effects/message_sending_text_flight.cpp`, `message_sending_history.cpp` |
+| Receiving messages | 150 ms height reveal, `easeOutQuint`; follow the bottom while revealing, preserve the viewport when reading older history | tdesktop `Telegram/SourceFiles/history/view/history_view_list_widget.cpp`, `ui/chat/chat.style` |
 
 ## Timing and rendering
 
@@ -53,6 +54,16 @@ History refreshes and duplicate server updates do not replay the flight. Failed
 text stays available in the bubble; clicking it retries with its original reply
 target. A response does not erase the next draft already typed in the composer.
 
+New incoming messages in the visible conversation reveal their height from the
+bottom using the upstream 150 ms curve. Initial history, duplicate updates and
+background chats do not replay this animation. Receiving a message while reading
+older history preserves the scroll position.
+
+Message context menus use the pointer's logical position mapped through the
+scrolled history into the chat pane. The popup flips left/up when needed and
+stays inside the pane; its chosen opening corner remains fixed during reveal.
+The header menu retains its separate anchor beneath the header button.
+
 The text-flight port uses live Skia text and bubble geometry. Telegram's captured
 QTextEdit images, rich text morphing and media sending animations are not reused.
 While sending, the history's render area extends over the composer, so the text
@@ -70,5 +81,9 @@ Sending checks cover intermediate timeline/position/mix values, immediate local
 insertion, preserving a new draft on acknowledgment, server echo deduplication,
 failure/retry, and keeping the reply target. The bridge is an offline in-memory
 test double; these checks do not open sessions or send any Telegram messages.
+Incoming checks cover the 30/75/150 ms curve samples, live message events,
+duplicate updates, retained history tokens and preserving a reader's scroll.
+Native right-click tests cover scrolled incoming/outgoing bubbles, edge flips,
+the selected reply target, compact mode, 100%/150% scaling and the header anchor.
 The Windows debug CI job also exports intermediate animation PNGs alongside the
 existing static previews and icon atlas at 100–300% display scaling.
