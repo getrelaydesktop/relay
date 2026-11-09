@@ -2,6 +2,30 @@
 use crate::MessageRow;
 use slint::{Model, VecModel};
 
+// Premium::CubicBezier(.25, .1, .25, 1, progress): invert the x coordinate,
+// then evaluate y. Keep the original curve instead of an easing approximation.
+pub fn rise_progress(progress: f32) -> f32 {
+    if progress <= 0.0 {
+        return 0.0;
+    }
+    if progress >= 1.0 {
+        return 1.0;
+    }
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    for _ in 0..48 {
+        let t = (lo + hi) / 2.0;
+        let x = 0.75 * t * (1.0 - t) + t * t * t;
+        if x < f64::from(progress) {
+            lo = t;
+        } else {
+            hi = t;
+        }
+    }
+    let t = (lo + hi) / 2.0;
+    let s = 1.0 - t;
+    (0.3 * s * s * t + 3.0 * s * t * t + t * t * t) as f32
+}
+
 pub struct PendingSend {
     pub peer_id: i32,
     pub local_id: i32,
@@ -58,6 +82,12 @@ pub fn fail(rows: &VecModel<MessageRow>, local_id: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rise_uses_the_original_bezier() {
+        assert_eq!(rise_progress(0.0), 0.0);
+        assert!((rise_progress(0.5) - 0.8024034).abs() < 0.000001);
+        assert_eq!(rise_progress(1.0), 1.0);
+    }
 
     fn local() -> MessageRow {
         MessageRow {

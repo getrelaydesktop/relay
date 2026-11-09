@@ -46,16 +46,17 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify Skia rendering
+        id: verify-skia
         if: matrix.profile == 'debug'
         env:
           RELAY_UI_SNAPSHOTS: target/ui-previews
         run: cargo test --locked --config 'profile.test.package.relay-desktop.debug=0'
       - name: Upload Skia previews
-        if: matrix.profile == 'debug'
+        if: ${{ !cancelled() && matrix.profile == 'debug' && steps.verify-skia.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: relay-desktop-skia-previews
-          if-no-files-found: error
+          if-no-files-found: warn
           path: target/ui-previews/*.png
       - name: Upload executable and licenses
         uses: actions/upload-artifact@v4

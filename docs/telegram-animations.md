@@ -55,8 +55,9 @@ target. A response does not erase the next draft already typed in the composer.
 
 The text-flight port uses live Skia text and bubble geometry. Telegram's captured
 QTextEdit images, rich text morphing and media sending animations are not reused.
-The flight is clipped to Relay's history viewport, including at its boundary
-with the composer. These differences affect its first frames and complex text.
+While sending, the history's render area extends over the composer, so the text
+starts at the input's position. An equal viewport padding preserves scroll
+bounds. Rich text morphing can still differ from the captured Qt frames.
 
 ## Verification
 

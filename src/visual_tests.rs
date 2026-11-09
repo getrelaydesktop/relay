@@ -384,6 +384,9 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     let probe = AnimationProbe::new().unwrap();
     probe
         .global::<probes::TelegramMotion>()
+        .on_send_rise(sending::rise_progress);
+    probe
+        .global::<probes::TelegramMotion>()
         .on_claim_send(|_| true);
     probe
         .global::<probes::TelegramMotion>()
@@ -504,7 +507,8 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     window.take_snapshot().unwrap();
     assert!(
         (probe.get_send_rise() - 0.8024034).abs() < 0.002,
-        "sending rise must use Telegram's cubic bezier"
+        "sending rise must use Telegram's cubic bezier: {}",
+        probe.get_send_rise()
     );
     window.advance(140);
     window.take_snapshot().unwrap();
@@ -550,13 +554,33 @@ fn verify_sending(window: &PreviewWindow, ui: &Desktop) {
         telegram::TgCommand::SendMessage(0, _, Some(42))
     ));
     window.advance(0);
-    window.take_snapshot().unwrap();
+    let start = window.take_snapshot().unwrap();
+    let composer_ink = |pixels: &slint::SharedPixelBuffer<Rgba8Pixel>| {
+        (688..706)
+            .flat_map(|y| (450..650).map(move |x| (y * 1100 + x) as usize))
+            .filter(|index| {
+                let p = pixels.as_slice()[*index];
+                p.r > 200 && p.g > 200 && p.b > 200
+            })
+            .count()
+    };
+    assert!(
+        composer_ink(&start) > 20,
+        "the flying text must start over the cleared composer, before entering history"
+    );
+    save_animation_frame("send-0", &start);
     window.advance(40);
     save_animation_frame("send-40", &window.take_snapshot().unwrap());
     window.advance(70);
     save_animation_frame("send-110", &window.take_snapshot().unwrap());
     window.advance(170);
-    save_animation_frame("send-280", &window.take_snapshot().unwrap());
+    let finish = window.take_snapshot().unwrap();
+    assert_eq!(
+        composer_ink(&finish),
+        0,
+        "flying text must leave the composer at the end"
+    );
+    save_animation_frame("send-280", &finish);
 
     // A server response updates the existing bubble and preserves a new draft.
     ui.set_draft("Следующее сообщение".into());
@@ -626,6 +650,30 @@ fn verify_sending(window: &PreviewWindow, ui: &Desktop) {
             .row_data(before + 1)
             .unwrap()
             .pending
+    );
+    events
+        .send(telegram::TgEvent::Error {
+            message: "Unrelated request failed".into(),
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    assert!(
+        ui.get_message_busy(),
+        "an unrelated error must not unlock an active text send"
+    );
+    events
+        .send(telegram::TgEvent::SendFailed {
+            message: "Offline test".into(),
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    drop(commands);
+    state.retry_send(ui, failed.id);
+    state.poll_telegram(ui);
+    let row = state.chats[0].messages.row_data(before + 1).unwrap();
+    assert!(
+        row.failed && !row.pending,
+        "a disconnected bridge must leave retryable text instead of a stuck clock"
     );
 }
 

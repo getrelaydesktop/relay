@@ -242,11 +242,18 @@ impl TelegramBridge {
         self.events.try_recv().ok()
     }
     fn send(&self, cmd: TgCommand) {
-        if self.commands.send(cmd).is_err() {
-            report(
-                &self.errors,
-                "Соединение Telegram остановлено. Перезапустите приложение.",
-            );
+        if let Err(error) = self.commands.send(cmd) {
+            let message = "Соединение Telegram остановлено. Перезапустите приложение.";
+            if matches!(
+                error.0,
+                TgCommand::SendMessage(..) | TgCommand::SendFile(..)
+            ) {
+                let _ = self.errors.send(TgEvent::SendFailed {
+                    message: message.into(),
+                });
+            } else {
+                report(&self.errors, message);
+            }
         }
     }
     pub fn start_qr(&mut self) {

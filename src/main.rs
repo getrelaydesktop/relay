@@ -260,7 +260,7 @@ impl Demo {
     }
 
     fn send(&mut self, ui: &Desktop) {
-        if ui.get_message_busy() {
+        if ui.get_message_busy() || self.pending_send.is_some() {
             return;
         }
         let draft = ui.get_draft();
@@ -315,7 +315,7 @@ impl Demo {
     }
 
     fn retry_send(&mut self, ui: &Desktop, local_id: i32) {
-        if !self.live_mode || ui.get_message_busy() {
+        if !self.live_mode || ui.get_message_busy() || self.pending_send.is_some() {
             return;
         }
         let Some(chat) = self.chats.get(self.active) else {
@@ -705,8 +705,10 @@ impl Demo {
                     }
                 }
                 telegram::TgEvent::Error { message } => {
-                    ui.set_text_send_pending(false);
-                    ui.set_message_busy(false);
+                    if self.pending_send.is_none() {
+                        ui.set_text_send_pending(false);
+                        ui.set_message_busy(false);
+                    }
                     ui.set_auth_busy(false);
                     if ui.get_auth_required() {
                         ui.set_auth_error(message.into());
@@ -860,6 +862,8 @@ fn chat_preview(text: &str) -> slint::SharedString {
 }
 
 fn install_rendering(ui: &Desktop) {
+    ui.global::<TelegramMotion>()
+        .on_send_rise(sending::rise_progress);
     let played_sends = Rc::new(RefCell::new(std::collections::HashSet::new()));
     ui.global::<TelegramMotion>()
         .on_claim_send(move |token| played_sends.borrow_mut().insert(token));
