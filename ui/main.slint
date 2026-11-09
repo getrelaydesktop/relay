@@ -35,6 +35,7 @@ export struct MessageRow {
     reply-body: string,
     reply-external: bool,
     reply-resolved: bool,
+    reply-quoted: bool,
     preview: image,
     has-preview: bool,
     preview-failed: bool,
@@ -488,6 +489,10 @@ export component Desktop inherits Window {
     callback network-events();
     callback preview-file();
     in-out property <bool> window-visible: true;
+    private property <int> details-generation: 0;
+    changed history-scroll-y => { details-scan.restart(); }
+    changed window-visible => { details-scan.restart(); }
+    details-scan := Timer { running: false; interval: 80ms; triggered => { root.details-generation += 1; } }
     private property <int> jump-target;
     private property <int> jump-generation;
     property <length> composer-extra: root.reply-message > 0 || root.edit-message-id > 0 ? 50px : 0px;
@@ -974,6 +979,7 @@ export component Desktop inherits Window {
                     viewport-width: self.width;
                     viewport-height: content-height + flight-padding;
                     changed viewport-height => {
+                        details-scan.restart();
                         if root.follow-sending || root.follow-incoming { root.scroll-to-bottom(); }
                     }
                     history-items := VerticalLayout {
@@ -983,12 +989,21 @@ export component Desktop inherits Window {
                         padding: 0px;
                         spacing: 0px;
                         for message[index] in root.messages : Rectangle {
-                            property <bool> in-view: root.window-visible && !root.auth-required && root.has-chat && root.show-chat
-                                && history-items.y + self.y + history.viewport-y < history.view-height + 150px
-                                && history-items.y + self.y + history.viewport-y + self.height > -150px;
-                            property <bool> details-requested: false;
-                            changed in-view => { if !self.in-view { self.details-requested = false; } }
-                            Timer { running: parent.in-view && !parent.details-requested; interval: 1ms; triggered => { parent.details-requested = true; root.request-details(message.id); } }
+                            property <int> scanned-generation: -1;
+                            // Read row geometry after layout, never while the
+                            // repeater is constructing its own layout delegates.
+                            Timer {
+                                running: parent.scanned-generation != root.details-generation;
+                                interval: 1ms;
+                                triggered => {
+                                    parent.scanned-generation = root.details-generation;
+                                    if root.window-visible && !root.auth-required && root.has-chat && root.show-chat
+                                        && history-items.y + parent.y + history.viewport-y < history.view-height + 150px
+                                        && history-items.y + parent.y + history.viewport-y + parent.height > -150px {
+                                        root.request-details(message.id);
+                                    }
+                                }
+                            }
                             property <int> focus-token: root.jump-target == message.id ? root.jump-generation : 0;
                             changed focus-token => {
                                 if self.focus-token > 0 { history.viewport-y = clamp(history.view-height / 2 - (history-items.y + self.y + self.height / 2), min(0px, history.view-height - history.content-height), 0px); }

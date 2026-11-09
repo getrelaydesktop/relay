@@ -824,6 +824,7 @@ impl Worker {
         self.peers.clear();
         self.avatar_peers.clear();
         self.avatar_requests.clear();
+        self.online_until.clear();
         self.folder_dialogs.clear();
         let mut iter = self.client.iter_dialogs();
         while dialogs.len() < 500 {

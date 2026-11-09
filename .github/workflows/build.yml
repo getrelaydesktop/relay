@@ -50,6 +50,7 @@ jobs:
         if: matrix.profile == 'debug'
         env:
           RELAY_UI_SNAPSHOTS: target/ui-previews
+          RUST_BACKTRACE: 1
         run: cargo test --locked --config 'profile.test.package.relay-desktop.debug=0'
       - name: Upload Skia previews
         if: ${{ !cancelled() && matrix.profile == 'debug' && steps.verify-skia.outcome != 'skipped' }}

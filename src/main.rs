@@ -435,7 +435,7 @@ impl Demo {
                             row.reply_resolved = true;
                             if let Some(original) = original {
                                 row.reply_author = original.sender.into();
-                                if row.reply_body.is_empty() {
+                                if !row.reply_quoted {
                                     row.reply_body = original.body.into();
                                 }
                             } else if row.reply_body.is_empty() {
@@ -495,6 +495,9 @@ impl Demo {
                     folders,
                 } => {
                     self.live_mode = true;
+                    self.detail_requests.clear();
+                    self.preview_lru.clear();
+                    self.preview_bytes = 0;
                     ui.set_show_chat(false);
                     self.folders = folders;
                     self.folder = 0;
@@ -748,6 +751,9 @@ impl Demo {
                     }
                 }
                 telegram::TgEvent::LoggedOut => {
+                    self.detail_requests.clear();
+                    self.preview_lru.clear();
+                    self.preview_bytes = 0;
                     ui.set_text_send_pending(false);
                     self.pending_send = None;
                     self.live_mode = false;
@@ -840,7 +846,7 @@ impl Demo {
         if avatars_changed {
             self.refresh_chats(ui);
         }
-        for chat in &self.chats {
+        if let Some(chat) = self.chats.get(self.active) {
             details::resolve_local(&chat.messages, &chat.row.title);
         }
     }
@@ -859,6 +865,7 @@ impl Demo {
             && ui.get_show_chat()
             && ui.get_has_chat()
             && !ui.get_auth_required()
+            && ui.get_window_visible()
             && ui.get_history_at_bottom();
         if let Some(chat) = self.chats.iter_mut().find(|c| c.row.id == peer_id) {
             let index = chat.messages.iter().position(|m| m.id == msg.id);
@@ -987,6 +994,7 @@ fn live_message(m: &telegram::TgMessage) -> MessageRow {
         reply_to: m.reply_to,
         sender: m.sender.clone().into(),
         reply_body: m.reply_quote.clone().into(),
+        reply_quoted: !m.reply_quote.is_empty(),
         reply_external: m.reply_external,
         photo_width: m.photo_width,
         photo_height: m.photo_height,
@@ -1280,7 +1288,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
     ui.on_request_details(move |mid| {
-        let Some(ui) = weak.upgrade() else { return };
+        let Some(_ui) = weak.upgrade() else { return };
         let mut state = state.borrow_mut();
         if !state.live_mode || mid <= 0 {
             return;
@@ -1293,6 +1301,11 @@ fn main() -> Result<(), slint::PlatformError> {
         let Some(row) = chat.messages.iter().find(|row| row.id == mid) else {
             return;
         };
+        if !(row.is_photo && !row.has_preview && !row.preview_failed)
+            && !(row.reply_to > 0 && !row.reply_resolved)
+        {
+            return;
+        }
         if state.detail_requests.insert((peer, mid)) {
             if row.is_photo && !row.has_preview && !row.preview_failed {
                 state.bridge.thumbnail(peer, mid);

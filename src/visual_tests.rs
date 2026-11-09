@@ -326,6 +326,7 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     verify_sending(&window, &ui);
     verify_incoming(&window, &ui);
     verify_context_menu(&window, &ui);
+    verify_photos_and_replies(&window, &ui);
     ui.hide().unwrap();
     drop(ui);
 
@@ -899,6 +900,177 @@ fn verify_context_menu(window: &PreviewWindow, ui: &Desktop) {
         window.advance(200);
         window.take_snapshot().unwrap();
     }
+}
+
+fn verify_photos_and_replies(window: &PreviewWindow, ui: &Desktop) {
+    let (bridge, _commands, events) = telegram::TelegramBridge::offline_for_rendering();
+    let mut state = Demo::with_bridge(bridge);
+    state.live_mode = true;
+    let mut parent = telegram::TgMessage {
+        id: 1,
+        sender: "Анна".into(),
+        body: "Исходное сообщение для ответа".into(),
+        time: "12:00".into(),
+        ..Default::default()
+    };
+    let reply = telegram::TgMessage {
+        id: 2,
+        reply_to: 1,
+        sender: "Вы".into(),
+        body: "Ответ с цитатой и переходом".into(),
+        time: "12:01".into(),
+        outgoing: true,
+        ..Default::default()
+    };
+    let photo = telegram::TgMessage {
+        id: 3,
+        is_photo: true,
+        has_media: true,
+        photo_width: 640,
+        photo_height: 480,
+        body: "Подпись к фотографии".into(),
+        time: "12:02".into(),
+        ..Default::default()
+    };
+    state.chats[0].messages.set_vec(vec![
+        live_message(&parent),
+        live_message(&reply),
+        live_message(&photo),
+    ]);
+    state.refresh_history(ui);
+    events
+        .send(telegram::TgEvent::Thumbnail {
+            peer_id: 0,
+            message_id: 3,
+            pixels: Some(image::RgbaImage::from_pixel(
+                640,
+                480,
+                image::Rgba([20, 160, 80, 255]),
+            )),
+        })
+        .unwrap();
+    events
+        .send(telegram::TgEvent::Presence {
+            peer_id: 0,
+            text: "был(а) сегодня в 12:34".into(),
+            online: false,
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    assert_eq!(
+        state.chats[0].messages.row_data(1).unwrap().reply_author,
+        "Анна"
+    );
+    assert_eq!(
+        state.chats[0].messages.row_data(1).unwrap().reply_body,
+        parent.body
+    );
+    assert!(state.chats[0].messages.row_data(2).unwrap().has_preview);
+    assert_eq!(ui.get_active_chat().presence, "был(а) сегодня в 12:34");
+    let clicked = Rc::new(Cell::new(0));
+    let received = clicked.clone();
+    ui.on_view_photo(move |id| received.set(id));
+    ui.set_reply_message(0);
+    ui.set_edit_message_id(0);
+    ui.set_network_status(Default::default());
+    for (label, width, scale) in [
+        ("photo-replies", 1100, 1.0),
+        ("photo-replies-150", 1100, 1.5),
+        ("photo-replies-compact", 430, 1.0),
+    ] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        window.window.set_size(PhysicalSize::new(
+            (width as f32 * scale) as u32,
+            (720.0 * scale) as u32,
+        ));
+        window.advance(0);
+        window.take_snapshot().unwrap();
+        window.advance(500);
+        window.take_snapshot().unwrap();
+        ui.invoke_scroll_to_bottom();
+        let pixels = window.take_snapshot().unwrap();
+        let green: Vec<_> = pixels
+            .as_slice()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| (p.r == 20 && p.g == 160 && p.b == 80).then_some(i))
+            .collect();
+        assert!(
+            green.len() > 1000,
+            "photo must render inside its bubble: {label}"
+        );
+        save_animation_frame(label, &pixels);
+        let index = green[green.len() / 2];
+        let position = LogicalPosition::new(
+            (index as u32 % pixels.width()) as f32 / scale,
+            (index as u32 / pixels.width()) as f32 / scale,
+        );
+        window.dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        window.dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        assert_eq!(
+            clicked.get(),
+            3,
+            "photo preview must open the existing viewer"
+        );
+    }
+    parent.body = "Отредактированный оригинал".into();
+    events
+        .send(telegram::TgEvent::MessageEdited {
+            peer_id: 0,
+            message: parent.clone(),
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    assert_eq!(
+        state.chats[0].messages.row_data(1).unwrap().reply_body,
+        parent.body
+    );
+    events
+        .send(telegram::TgEvent::History {
+            peer_id: 0,
+            messages: vec![parent.clone(), reply.clone(), photo.clone()],
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    assert!(state.chats[0].messages.row_data(2).unwrap().has_preview);
+    assert_eq!(state.chats[0].messages.row_data(1).unwrap().reply_to, 1);
+    ui.set_reply_message(1);
+    ui.set_reply_author("Анна".into());
+    ui.set_reply_body(parent.body.clone().into());
+    window.advance(0);
+    window.take_snapshot().unwrap();
+    save_animation_frame("reply-composer", &window.take_snapshot().unwrap());
+    ui.set_reply_message(0);
+    let rows: Vec<_> = (1..30)
+        .map(|id| {
+            let mut row = message("Более раннее сообщение\nПереход из цитаты", "12:00", false);
+            row.id = id;
+            row
+        })
+        .collect();
+    ui.set_messages(ModelRc::new(VecModel::from(rows)));
+    window.advance(0);
+    window.take_snapshot().unwrap();
+    ui.invoke_scroll_to_bottom();
+    window.take_snapshot().unwrap();
+    let before = ui.get_history_scroll_y();
+    assert!(before < -100.0);
+    ui.invoke_reveal_message(1);
+    window.advance(0);
+    window.take_snapshot().unwrap();
+    assert!(
+        ui.get_history_scroll_y() > before + 100.0,
+        "jumping to a reply must scroll to the original"
+    );
+    save_animation_frame("reply-jump", &window.take_snapshot().unwrap());
 }
 
 fn verify_sending(window: &PreviewWindow, ui: &Desktop) {

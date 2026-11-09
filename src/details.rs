@@ -66,7 +66,7 @@ pub fn resolve_local(rows: &VecModel<MessageRow>, title: &str) {
             } else {
                 original.sender.clone()
             };
-            if row.reply_body.is_empty() {
+            if !row.reply_quoted {
                 row.reply_body = original.body.clone();
             }
             row.reply_resolved = true;
