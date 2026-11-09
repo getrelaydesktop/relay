@@ -1,4 +1,5 @@
 import { Theme, ActionButton, IconButton } from "theme.slint";
+import { TelegramMotion, Motion } from "motion.slint";
 
 component OutlinedField inherits Rectangle {
     in property <string> label;
@@ -15,6 +16,7 @@ component OutlinedField inherits Rectangle {
 
     property <bool> active: field-input.has-focus;
     property <color> stroke: root.active ? Theme.accent : (Theme.dark ? #3a4858 : #dadce0);
+    animate stroke { duration: 150ms; easing: linear; }
 
     Rectangle {
         x: 0px;
@@ -77,6 +79,7 @@ component OutlinedField inherits Rectangle {
 }
 
 export component AuthScreen inherits Rectangle {
+    clip: true;
     in-out property <int> step: 0; // 0 = QR, 1 = Phone, 2 = Code, 3 = 2FA Password
     in property <string> qr-matrix;
     in-out property <string> country: "Russian Federation";
@@ -98,6 +101,30 @@ export component AuthScreen inherits Rectangle {
     callback open-settings();
 
     background: Theme.surface;
+
+    private property <int> shown-step: 0;
+    private property <int> previous-step: 0;
+    private property <float> direction: 1;
+    out property <float> animation-progress: step-motion.value;
+    step-motion := Motion { target: 1; duration: 200ms; }
+    init => { root.shown-step = root.step; root.previous-step = root.step; }
+    changed step => {
+        root.previous-step = root.shown-step;
+        root.direction = root.step > root.shown-step ? 1 : -1;
+        root.shown-step = root.step;
+        step-motion.restart(0, 1);
+    }
+    // Ui::SlideAnimation::state: the incoming and outgoing snapshots use
+    // separate circular curves for their position and opacity.
+    pure function page-x(page: int) -> length {
+        return page == root.shown-step
+            ? root.direction * 360px * (1 - TelegramMotion.curve(1, step-motion.value))
+            : -root.direction * 360px * TelegramMotion.curve(2, step-motion.value);
+    }
+    pure function page-opacity(page: int) -> float {
+        return page == root.shown-step ? TelegramMotion.curve(2, step-motion.value)
+            : 1 - TelegramMotion.curve(1, step-motion.value);
+    }
 
     // Top bar actions (Back arrow + Settings + Night Mode toggle, matching Telegram Desktop IntroWidget)
     if root.step > 0 : IconButton {
@@ -157,7 +184,11 @@ export component AuthScreen inherits Rectangle {
         background: transparent;
 
         // STEP 0: QR CODE LOGIN
-        if root.step == 0 : Rectangle {
+        Rectangle {
+            visible: root.shown-step == 0 || (root.previous-step == 0 && step-motion.value < 1);
+            x: root.page-x(0);
+            y: 0px;
+            opacity: root.page-opacity(0);
             width: parent.width;
             height: parent.height;
 
@@ -293,7 +324,11 @@ export component AuthScreen inherits Rectangle {
         }
 
         // STEP 1: PHONE NUMBER LOGIN
-        if root.step == 1 : Rectangle {
+        Rectangle {
+            visible: root.shown-step == 1 || (root.previous-step == 1 && step-motion.value < 1);
+            x: root.page-x(1);
+            y: 0px;
+            opacity: root.page-opacity(1);
             width: parent.width;
             height: parent.height;
 
@@ -406,7 +441,11 @@ export component AuthScreen inherits Rectangle {
         }
 
         // STEP 2: TELEGRAM / SMS VERIFICATION CODE
-        if root.step == 2 : Rectangle {
+        Rectangle {
+            visible: root.shown-step == 2 || (root.previous-step == 2 && step-motion.value < 1);
+            x: root.page-x(2);
+            y: 0px;
+            opacity: root.page-opacity(2);
             width: parent.width;
             height: parent.height;
 
@@ -463,7 +502,11 @@ export component AuthScreen inherits Rectangle {
         }
 
         // STEP 3: 2FA CLOUD PASSWORD
-        if root.step == 3 : Rectangle {
+        Rectangle {
+            visible: root.shown-step == 3 || (root.previous-step == 3 && step-motion.value < 1);
+            x: root.page-x(3);
+            y: 0px;
+            opacity: root.page-opacity(3);
             width: parent.width;
             height: parent.height;
 
@@ -518,5 +561,8 @@ export component AuthScreen inherits Rectangle {
                 clicked => { root.submit-password(); }
             }
         }
+    }
+    if step-motion.value < 1 : TouchArea {
+        width: parent.width; height: parent.height;
     }
 }

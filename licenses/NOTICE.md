@@ -29,3 +29,9 @@ The Slint interface is a manual port. It does not contain Telegram's Qt widget
 implementation. Appearance metrics are based on dialogs/dialogs.style,
 ui/chat/chat.style, window/window_main_menu.style, lib_ui/ui/basic.style and the
 bundled night.tdesktop-theme color palette.
+
+Animation equations, durations and transition behavior in ui/motion.slint and
+the associated UI components are ported from the same Telegram Desktop version
+and desktop-app/lib_ui submodule. See docs/telegram-animations.md for pinned
+source links, covered interactions and verification. These algorithms retain
+their upstream GPL-3.0 license; see Telegram-GPL-3.0.txt and Telegram-LEGAL.txt.

@@ -1,0 +1,186 @@
+// Ported from Telegram Desktop v7.4.1 and its pinned desktop-app/lib_ui.
+// Exact source locations and parameters: docs/telegram-animations.md.
+export global TelegramMotion {
+    in-out property <bool> enabled: true;
+    out property <duration> box-duration: 200ms;
+    out property <duration> slide-duration: 240ms;
+    out property <length> slide-shift: 100px;
+    out property <duration> toggle-duration: 120ms;
+    out property <duration> popup-show-duration: 200ms;
+    out property <duration> popup-hide-duration: 150ms;
+    out property <duration> emoji-duration: 200ms;
+    out property <duration> ripple-show-duration: 650ms;
+    out property <duration> ripple-hide-duration: 200ms;
+
+    // anim::transition takes a delta and normalized elapsed time. These are
+    // the original equations, rather than cubic-bezier approximations.
+    public pure function curve(kind: int, time: float) -> float {
+        let t = clamp(time, 0, 1);
+        if kind == 1 { return Math.sqrt(max(0, 1 - (t - 1) * (t - 1))); }
+        if kind == 2 { return 1 - Math.sqrt(max(0, 1 - t * t)); }
+        if kind == 3 { return 1 + (t - 1) * (t - 1) * (t - 1) * (t - 1) * (t - 1); }
+        if kind == 4 { return (1 - cos(t * 180deg)) / 2; }
+        return t;
+    }
+}
+
+// Ui::Animations::Simple semantics: restarting samples the current value and
+// runs a full-duration transition to the new endpoint. Slint drives the clock
+// with its render loop, so this also follows 90/120/144 Hz screens.
+export component Motion inherits Rectangle {
+    in property <float> target;
+    in property <duration> duration: TelegramMotion.box-duration;
+    in property <int> curve: 0;
+    out property <float> value: from + (to - from) * TelegramMotion.curve(active-curve, progress);
+    out property <float> progress: clock-target == clock-start ? 1
+        : clamp((clock - clock-start) / (clock-target - clock-start), 0, 1);
+    private property <float> from: 0;
+    private property <float> to: 0;
+    private property <int> active-curve: 0;
+    private property <float> clock-start: 0;
+    private property <float> clock-target: 0;
+    private property <float> clock: clock-target;
+    width: 0px;
+    height: 0px;
+    animate clock {
+        duration: TelegramMotion.enabled ? root.duration : 0ms;
+        easing: linear;
+    }
+    init => {
+        root.from = root.target;
+        root.to = root.target;
+        root.active-curve = root.curve;
+    }
+    changed target => { root.run(root.target); }
+    public function run(endpoint: float) {
+        let current = root.value;
+        root.restart(current, endpoint);
+    }
+    public function restart(initial: float, endpoint: float) {
+        root.from = initial;
+        root.to = endpoint;
+        root.active-curve = root.curve;
+        root.clock-start = root.clock;
+        root.clock-target += 1;
+    }
+}
+
+export component BoxOverlay inherits Rectangle {
+    in property <bool> shown;
+    in property <color> dim-color: #0000007f;
+    opacity-motion := Motion { target: root.shown ? 1 : 0; }
+    dim-motion := Motion { target: root.shown ? 1 : 0; curve: root.shown ? 1 : 0; }
+    visible: root.shown || opacity-motion.value > 0;
+    Rectangle { background: root.dim-color; opacity: dim-motion.value; }
+    Rectangle {
+        opacity: opacity-motion.value;
+        @children
+    }
+    if !root.shown : TouchArea { }
+}
+
+component RippleWave inherits Rectangle {
+    in property <bool> held;
+    in property <length> origin-x;
+    in property <length> origin-y;
+    in property <color> ink;
+    private property <length> center-x;
+    private property <length> center-y;
+    private property <float> reach: Math.sqrt(
+        Math.pow(max(center-x, self.width - center-x) / 1px, 2)
+        + Math.pow(max(center-y, self.height - center-y) / 1px, 2));
+    expand := Motion { duration: TelegramMotion.ripple-show-duration; curve: 3; }
+    fade := Motion { target: root.held ? 1 : 0; duration: TelegramMotion.ripple-hide-duration; }
+    init => {
+        root.center-x = root.origin-x;
+        root.center-y = root.origin-y;
+        expand.run(1);
+    }
+    opacity: fade.value;
+    visible: fade.value > 0;
+    Rectangle {
+        width: 2px * root.reach * expand.value;
+        height: self.width;
+        x: root.center-x - self.width / 2;
+        y: root.center-y - self.height / 2;
+        border-radius: self.width / 2;
+        background: root.ink;
+    }
+}
+
+export component RippleSurface inherits Rectangle {
+    in property <bool> pressed;
+    in property <length> press-x;
+    in property <length> press-y;
+    in property <color> ink;
+    private property <int> wave-count: 0;
+    clip: true;
+    changed pressed => { if root.pressed { root.wave-count += 1; } }
+    for index in root.wave-count : RippleWave {
+        held: root.pressed && index == root.wave-count - 1;
+        origin-x: root.press-x;
+        origin-y: root.press-y;
+        ink: root.ink;
+    }
+    Timer {
+        running: root.wave-count > 0 && !root.pressed;
+        interval: TelegramMotion.ripple-hide-duration;
+        triggered => { root.wave-count = 0; }
+    }
+}
+
+// Ui::PanelAnimation::computeState. Keep the content at its final size and
+// reveal it from its origin; stretching the text would blur the glyphs.
+export component PopupReveal inherits Rectangle {
+    in property <bool> shown;
+    in property <length> content-width;
+    in property <length> content-height;
+    in property <bool> from-bottom: false;
+    in property <color> fill;
+    in property <length> radius: 8px;
+    private property <bool> retained: shown || fade.value > 0;
+    out property <float> show-progress: reveal.value;
+    reveal := Motion { duration: TelegramMotion.popup-show-duration; }
+    fade := Motion { duration: TelegramMotion.popup-hide-duration; }
+    private property <float> frame-width: 0.5 + 0.5 * TelegramMotion.curve(1, show-progress / 0.6);
+    private property <float> frame-height: 0.3 + 0.7 * TelegramMotion.curve(1, show-progress / 0.9);
+    width: content-width * frame-width;
+    height: content-height * frame-height;
+    changed shown => {
+        if root.shown {
+            if fade.value <= 0 {
+                reveal.restart(0, 1);
+                fade.restart(1, 1);
+            } else { fade.run(1); }
+        } else { fade.run(0); }
+    }
+    // PopupMenu keeps the reveal running if dismissed mid-opening. Reopening
+    // during its fade reverses opacity without restarting the geometry.
+    opacity: fade.value * TelegramMotion.curve(1, show-progress / 0.3);
+    visible: retained;
+    background: fill;
+    border-radius: radius;
+    clip: true;
+    Rectangle {
+        x: root.width - root.content-width;
+        y: root.from-bottom ? root.height - root.content-height : 0px;
+        width: root.content-width;
+        height: root.content-height;
+        @children
+    }
+    // The original panel reveals its content through a moving 20% fade band.
+    Rectangle {
+        visible: self.fade-start < 1;
+        property <float> fade-start: TelegramMotion.curve(1, root.show-progress);
+        property <float> fade-end: min(1, self.fade-start + 0.2);
+        width: parent.width;
+        height: root.content-height;
+        y: root.from-bottom ? parent.height - self.height : 0px;
+        background: @linear-gradient(root.from-bottom ? 0deg : 180deg,
+            root.fill.transparentize(1) 0%,
+            root.fill.transparentize(1) self.fade-start,
+            root.fill self.fade-end,
+            root.fill 100%);
+    }
+    if !root.shown : TouchArea { }
+}

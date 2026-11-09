@@ -6,7 +6,6 @@ use slint::winit_030::{WinitWindowAccessor, winit::window::ResizeDirection};
 use slint::{Color, ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 
 slint::include_modules!();
-mod menu_animation;
 mod preferences;
 mod qr;
 mod render_assets;
@@ -790,7 +789,6 @@ fn main() -> Result<(), slint::PlatformError> {
         .select()?;
     let ui = Desktop::new()?;
     install_rendering(&ui);
-    menu_animation::install(&ui);
     let weak = ui.as_weak();
     ui.on_minimize_window(move || {
         if let Some(ui) = weak.upgrade() {

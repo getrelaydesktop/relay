@@ -1,4 +1,5 @@
 import { VectorIcon } from "icons/vector-icons.slint";
+import { TelegramMotion, RippleSurface } from "motion.slint";
 export global Theme {
     in-out property <int> design: 0;
     in-out property <bool> dark: true;
@@ -31,6 +32,10 @@ export global Theme {
     out property <color> icon-fg: dark ? #6c7883 : #a8a8a8;
     out property <color> icon-hover-fg: dark ? #737e87 : #999999;
     out property <color> menu-icon-fg: dark ? #737e87 : #a8a8a8;
+    out property <color> ripple: dark ? #24303d : #e5e5e5;
+    out property <color> active-ripple: dark ? #3b7cb1 : #2095d0;
+    out property <color> dialog-ripple: dark ? #25313d : #e5e5e5;
+    out property <color> selected-dialog-ripple: dark ? #315a80 : #2095d0;
     out property <color> line: dark ? #101921 : #e7e7e7;
     out property <color> border: dark ? #101921 : #e0e0e0;
     out property <color> selected: material
@@ -146,6 +151,13 @@ export component ActionButton inherits Rectangle {
         border-color: pointer.has-hover ? Theme.icon-hover-fg : Theme.border;
         background: transparent;
     }
+    RippleSurface {
+        border-radius: Theme.control-radius;
+        pressed: pointer.pressed;
+        press-x: pointer.mouse-x;
+        press-y: pointer.mouse-y;
+        ink: root.primary || root.selected ? Theme.active-ripple : Theme.ripple;
+    }
     label := Text {
         width: parent.width;
         height: parent.height;
@@ -188,6 +200,12 @@ export component MenuItem inherits Rectangle {
     accessible-label: text;
     accessible-enabled: enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
+    RippleSurface {
+        pressed: pointer.pressed;
+        press-x: pointer.mouse-x;
+        press-y: pointer.mouse-y;
+        ink: Theme.ripple;
+    }
     Text {
         x: 18px;
         width: parent.width - 36px;
@@ -301,6 +319,17 @@ export component IconButton inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: keyboard;
+    RippleSurface {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: min(parent.width, parent.height);
+        height: self.width;
+        border-radius: self.width / 2;
+        pressed: hit.pressed;
+        press-x: hit.mouse-x - self.x;
+        press-y: hit.mouse-y - self.y;
+        ink: Theme.ripple;
+    }
     VectorIcon {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;

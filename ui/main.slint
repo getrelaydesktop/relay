@@ -1,4 +1,5 @@
 import { VectorIcon } from "icons/vector-icons.slint";
+import { TelegramMotion, Motion, PopupReveal, BoxOverlay, RippleSurface } from "motion.slint";
 import { ListView } from "list-view.slint";
 import { AuthScreen } from "auth.slint";
 import { SettingsHome } from "settings-home.slint";
@@ -6,6 +7,7 @@ import { Theme, ActionButton, Entry, IconButton, MenuItem, AvatarFill, BubbleSha
 import "fonts/OpenSans-Regular.ttf";
 import "fonts/OpenSans-SemiBold.ttf";
 export { Theme } from "theme.slint";
+export { TelegramMotion } from "motion.slint";
 
 export struct ChatRow {
     id: int,
@@ -128,6 +130,17 @@ component ChatTile inherits Rectangle {
         height: parent.height - (Theme.design == 0 ? 0px : 6px);
         border-radius: Theme.design == 0 ? 0px : 10px;
         background: root.selected ? Theme.selected : pointer.has-hover ? Theme.hover : transparent;
+    }
+    RippleSurface {
+        x: Theme.design == 0 ? 0px : 4px;
+        y: Theme.design == 0 ? 0px : 3px;
+        width: parent.width - (Theme.design == 0 ? 0px : 8px);
+        height: parent.height - (Theme.design == 0 ? 0px : 6px);
+        border-radius: Theme.design == 0 ? 0px : 10px;
+        pressed: pointer.pressed;
+        press-x: pointer.mouse-x - self.x;
+        press-y: pointer.mouse-y - self.y;
+        ink: root.selected ? Theme.selected-dialog-ripple : Theme.dialog-ripple;
     }
     Avatar {
         x: 10px;
@@ -346,7 +359,7 @@ export component Desktop inherits Window {
     in-out property <bool> has-chat: false;
     in-out property <bool> show-chat: false;
     in-out property <bool> settings-open: false;
-    property <int> settings-page: 0;
+    in-out property <int> settings-page: 0;
     in property <string> settings-error;
 
     in-out property <bool> auth-required: true;
@@ -413,28 +426,39 @@ export component Desktop inherits Window {
     callback close-window();
     callback drag-window();
     callback resize-window();
-    callback animate-menu(bool);
 
     property <bool> compact: root.width < 740px;
     property <length> rail-width: root.compact ? 0px : 72px;
     property <length> sidebar-width: root.compact ? root.width : 325px;
     property <length> chat-left: root.compact ? 0px : root.rail-width + root.sidebar-width + 1px;
-    property <bool> menu-open: false;
-    property <bool> emoji-open: false;
-    property <bool> chat-menu-open: false;
+    in-out property <bool> menu-open: false;
+    in-out property <bool> emoji-open: false;
+    in-out property <bool> chat-menu-open: false;
     property <int> emoji-tab: 0;
-    in-out property <float> menu-progress: 0;
-    property <float> settings-progress: root.settings-open ? 1 : 0;
-    property <float> emoji-progress: root.emoji-open ? 1 : 0;
-    changed menu-open => { root.animate-menu(root.menu-open); }
-    animate settings-progress {
-        duration: 200ms;
-        easing: linear;
+    out property <float> menu-progress: menu-motion.value;
+    out property <float> settings-progress: settings-motion.value;
+    out property <float> compact-progress: compact-motion.value;
+    out property <float> settings-page-progress: settings-page-motion.value;
+    out property <float> layer-dim-progress: dim-motion.value;
+    out property <float> auth-transition-progress: auth-screen.animation-progress;
+    property <float> emoji-progress: emoji-motion.value;
+    menu-motion := Motion { target: root.menu-open ? 1 : 0; curve: 1; }
+    settings-motion := Motion { target: root.settings-open ? 1 : 0; }
+    dim-motion := Motion {
+        target: root.menu-open || root.settings-open ? 1 : 0;
+        curve: root.menu-open || root.settings-open ? 1 : 0;
     }
-    animate emoji-progress {
-        duration: 120ms;
-        easing: linear;
+    compact-motion := Motion {
+        target: root.show-chat ? 1 : 0;
+        curve: 1;
+        duration: TelegramMotion.slide-duration;
     }
+    settings-page-motion := Motion {
+        target: root.settings-page;
+        curve: 1;
+        duration: TelegramMotion.slide-duration;
+    }
+    emoji-motion := Motion { target: root.emoji-open ? 1 : 0; curve: 1; duration: TelegramMotion.slide-duration; }
 
     forward-focus: keys;
     keys := FocusScope {
@@ -569,11 +593,11 @@ export component Desktop inherits Window {
         }
 
         Rectangle {
-            x: root.rail-width;
+            x: root.rail-width - (root.compact ? TelegramMotion.slide-shift * root.compact-progress : 0px);
             y: 26px;
             width: root.sidebar-width;
             height: root.height - 26px;
-            visible: !root.compact || !root.show-chat;
+            visible: !root.compact || root.compact-progress < 1;
             background: Theme.surface;
             if root.compact : IconButton {
                 x: 7px;
@@ -629,6 +653,10 @@ export component Desktop inherits Window {
                 font-size: 13px;
                 horizontal-alignment: center;
             }
+            if root.compact : Rectangle {
+                background: #0000003c;
+                opacity: root.compact-progress;
+            }
         }
 
         if !root.compact : Rectangle {
@@ -640,12 +668,17 @@ export component Desktop inherits Window {
         }
 
         Rectangle {
-            x: root.chat-left;
+            x: root.compact ? root.width * (1 - root.compact-progress) : root.chat-left;
             y: 26px;
-            width: root.width - self.x;
+            width: root.compact ? root.width : root.width - root.chat-left;
             height: root.height - 26px;
-            visible: !root.compact || root.show-chat;
+            visible: !root.compact || root.compact-progress > 0;
             background: Theme.canvas;
+            if root.compact && root.compact-progress > 0 && root.compact-progress < 1 : Rectangle {
+                x: -12px; width: 12px; height: parent.height;
+                background: @linear-gradient(90deg, #00000000, #00000040);
+                opacity: root.compact-progress;
+            }
 
             if !root.has-chat : Rectangle {
                 x: (parent.width - self.width) / 2;
@@ -929,23 +962,22 @@ export component Desktop inherits Window {
                 ActionButton { x: parent.width - 84px; y: 5px; width: 76px; height: 36px; text: "Search"; clicked => { root.search-chat(); } }
             }
 
-            if root.chat-menu-open && root.has-chat : Rectangle {
+            Rectangle {
                 width: parent.width;
                 height: parent.height;
+                visible: root.has-chat && (root.chat-menu-open || chat-popup.visible);
                 TouchArea {
                     width: parent.width;
                     height: parent.height;
                     clicked => { root.chat-menu-open = false; }
                 }
-                Rectangle {
+                chat-popup := PopupReveal {
+                    shown: root.chat-menu-open;
                     x: max(4px, history.width - self.width - 8px);
                     y: 50px;
-                    width: 218px;
-                    height: menu-items.preferred-height + 8px;
-                    background: Theme.surface;
-                    border-color: Theme.border;
-                    border-width: 1px;
-                    border-radius: 4px;
+                    content-width: 218px;
+                    content-height: menu-items.preferred-height + 8px;
+                    fill: Theme.surface;
                     menu-items := VerticalLayout {
                         x: 1px; y: 4px; width: parent.width - 2px;
                         padding: 0px; spacing: 0px;
@@ -968,7 +1000,6 @@ export component Desktop inherits Window {
                 width: root.compact ? parent.width : 292px;
                 height: parent.height;
                 visible: root.has-chat && root.emoji-progress > 0;
-                opacity: root.emoji-progress;
                 background: Theme.surface;
                 Rectangle {
                     x: 0px;
@@ -1065,8 +1096,9 @@ export component Desktop inherits Window {
         IconButton { x: parent.width - 40px; y: 2px; icon: "close"; label: "Dismiss"; clicked => { root.network-status = ""; } }
     }
 
-    if root.forward-open && !root.auth-required : Rectangle {
-        width: root.width; height: root.height; background: #00000080;
+    BoxOverlay {
+        shown: root.forward-open && !root.auth-required;
+        width: root.width; height: root.height;
         TouchArea { width: parent.width; height: parent.height; }
         Rectangle {
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
@@ -1090,8 +1122,9 @@ export component Desktop inherits Window {
         }
     }
 
-    if root.file-open && !root.auth-required : Rectangle {
-        width: root.width; height: root.height; background: #00000080;
+    BoxOverlay {
+        shown: root.file-open && !root.auth-required;
+        width: root.width; height: root.height;
         TouchArea { width: parent.width; height: parent.height; }
         Rectangle {
             x: (parent.width - self.width) / 2; y: (parent.height - 210px) / 2;
@@ -1108,8 +1141,9 @@ export component Desktop inherits Window {
         }
     }
 
-    if root.confirm-delete && !root.auth-required : Rectangle {
-        width: root.width; height: root.height; background: #00000080;
+    BoxOverlay {
+        shown: root.confirm-delete && !root.auth-required;
+        width: root.width; height: root.height;
         TouchArea { width: parent.width; height: parent.height; }
         Rectangle {
             x: (parent.width - self.width) / 2; y: (parent.height - 160px) / 2;
@@ -1183,7 +1217,8 @@ export component Desktop inherits Window {
         }
     }
 
-    if root.auth-required : AuthScreen {
+    auth-screen := AuthScreen {
+        visible: root.auth-required;
         x: 0px;
         y: 26px;
         width: root.width;
@@ -1256,12 +1291,17 @@ export component Desktop inherits Window {
     }
 
     Rectangle {
+        x: 0px; y: 26px; width: root.width; height: root.height - 26px;
+        visible: root.layer-dim-progress > 0;
+        background: rgba(0, 0, 0, (127 / 255) * root.layer-dim-progress);
+    }
+    Rectangle {
         x: 0px;
         visible: root.menu-progress > 0;
         y: 26px;
         width: root.width;
         height: root.height - 26px;
-        background: rgba(0, 0, 0, 0.56 * root.menu-progress);
+        background: transparent;
         TouchArea {
             width: parent.width;
             height: parent.height;
@@ -1316,6 +1356,12 @@ export component Desktop inherits Window {
                 width: parent.width;
                 height: 40px;
                 background: menu-hit.has-hover ? Theme.hover : transparent;
+                RippleSurface {
+                    pressed: menu-hit.pressed;
+                    press-x: menu-hit.mouse-x;
+                    press-y: menu-hit.mouse-y;
+                    ink: Theme.ripple;
+                }
                 if index == 1 : Rectangle {
                     x: 0px;
                     y: -4px;
@@ -1352,6 +1398,7 @@ export component Desktop inherits Window {
                     y: 12px;
                     width: 34px;
                     height: 16px;
+                    toggle-motion := Motion { target: Theme.dark ? 1 : 0; duration: TelegramMotion.toggle-duration; }
                     Rectangle {
                         x: 0px;
                         y: 0px;
@@ -1359,9 +1406,10 @@ export component Desktop inherits Window {
                         height: parent.height;
                         border-radius: self.height / 2;
                         background: Theme.dark ? Theme.accent : Theme.muted;
+                        animate background { duration: TelegramMotion.toggle-duration; easing: linear; }
                     }
                     Rectangle {
-                        x: Theme.dark ? 18px : 2px;
+                        x: 2px + 16px * toggle-motion.value;
                         y: 1px;
                         width: 14px;
                         height: 14px;
@@ -1403,10 +1451,9 @@ export component Desktop inherits Window {
         x: 0px;
         y: 26px;
         visible: root.settings-progress > 0;
-        opacity: root.settings-progress;
         width: root.width;
         height: root.height - 26px;
-        background: #0000008c;
+        background: transparent;
         TouchArea {
             width: parent.width;
             height: parent.height;
@@ -1418,6 +1465,7 @@ export component Desktop inherits Window {
             width: min(392px, parent.width - 24px);
             height: min(620px, parent.height - 32px);
             background: transparent;
+            opacity: root.settings-progress;
             clip: true;
             Rectangle {
                 x: 0px;
@@ -1429,9 +1477,19 @@ export component Desktop inherits Window {
             }
             TouchArea { width: parent.width; height: parent.height; }
             Text {
-                x: root.settings-page == 0 ? 22px : 56px;
+                x: 22px - TelegramMotion.slide-shift * root.settings-page-progress;
                 y: 16px;
-                text: root.settings-page == 0 ? "Settings" : "Chat Settings";
+                text: "Settings";
+                visible: root.settings-page-progress < 1;
+                font-size: 16px;
+                font-weight: 600;
+                color: Theme.ink;
+            }
+            Text {
+                x: 56px + parent.width * (1 - root.settings-page-progress);
+                y: 16px;
+                text: "Chat Settings";
+                visible: root.settings-page-progress > 0;
                 font-size: 16px;
                 font-weight: 600;
                 color: Theme.ink;
@@ -1443,16 +1501,18 @@ export component Desktop inherits Window {
                 label: "Close settings";
                 clicked => { root.settings-open = false; }
             }
-            if root.settings-page == 1 : IconButton {
-                x: 8px;
+            IconButton {
+                x: 8px + parent.width * (1 - root.settings-page-progress);
                 y: 7px;
+                visible: root.settings-page-progress > 0;
                 icon: "back";
                 label: "Back to settings";
                 clicked => { root.settings-page = 0; }
             }
-            if root.settings-page == 0 : SettingsHome {
-                x: 0px;
+            SettingsHome {
+                x: -TelegramMotion.slide-shift * root.settings-page-progress;
                 y: 54px;
+                visible: root.settings-page-progress < 1;
                 width: parent.width;
                 height: parent.height - 54px;
                 user-name: root.user-name;
@@ -1466,11 +1526,12 @@ export component Desktop inherits Window {
                 }
             }
             Rectangle {
-                x: 0px;
+                x: parent.width * (1 - root.settings-page-progress);
                 y: 54px;
                 width: parent.width;
                 height: parent.height - 54px;
-                visible: root.settings-page == 1;
+                visible: root.settings-page-progress > 0;
+                background: Theme.surface;
                 Text {
                     x: 22px;
                     y: 14px;
@@ -1559,6 +1620,9 @@ export component Desktop inherits Window {
                     font-size: 12px;
                     wrap: word-wrap;
                 }
+            }
+            if root.settings-page-progress > 0 && root.settings-page-progress < 1 : TouchArea {
+                width: parent.width; height: parent.height;
             }
         }
     }
