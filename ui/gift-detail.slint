@@ -37,7 +37,8 @@ component ReceiptBackdrop inherits Rectangle {
         ] : Image {
             x: floor(point.x * parent.width / 1px) * 1px - self.width / 2;
             y: floor(point.y * parent.height / 1px) * 1px - self.height / 2;
-            width: 40px * point.scale; height: self.width;
+            // GetSizeLarge = 24px; the 36px cache canvas has transparent padding.
+            width: 24px * point.scale; height: self.width;
             source: root.gift.pattern; colorize: root.gift.pattern-color;
             opacity: point.alpha; image-fit: contain;
         }
@@ -59,11 +60,12 @@ component ReceiptAvatar inherits Rectangle {
         width: parent.width; height: parent.height; text: root.initials;
         font-size: 12px; color: white; horizontal-alignment: center; vertical-alignment: center;
     }
-    // Hidden author deliberately has no name/initials/avatar leakage. The
-    // exact EmptyUserpic hidden-author artwork is not available in ui/icons.
-    if root.hidden : VectorIcon {
+    // EmptyUserpic::PaintHiddenAuthor: 32px icon inside defaultDialogRow's
+    // 46px photo, scaled together; the pinned asset is a 3x alpha mask.
+    if root.hidden : Image {
         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-        width: 16px; height: 16px; name: "profile"; tint: white;
+        width: parent.width * 32 / 46; height: self.width;
+        source: @image-url("icons/gift-hidden-author.png"); colorize: white;
     }
 }
 
@@ -201,22 +203,25 @@ export component GiftDetail inherits Rectangle {
     private property <string> primary-text: gift.collectible && gift.resale && !gift.mine ? "Купить" : root.unsupported-primary ? "Улучшить" : "OK";
     private property <bool> scrolled: scroll.viewport-y < 0px;
     private property <string> gift-identity: root.gift.key;
+    private property <string> receipt-title: root.gift.collectible ? root.gift.title
+        : root.gift.number > 0 && root.gift.title != "" ? root.gift.title + " #" + root.gift-number(root.gift.number)
+        : root.gift.to-self ? "Подарок себе" : root.gift.mine ? "Полученный подарок" : "Подарок";
     changed active => { if root.active { keys.focus(); } }
     changed gift-identity => { scroll.viewport-y = 0px; if root.active { keys.focus(); } }
     pure function triple(value: int) -> string {
         return value < 10 ? "00" + value : value < 100 ? "0" + value : "" + value;
     }
-    // Lang::FormatCountDecimal's English grouping, without turning the
-    // caller's integer into a guessed serial from gift.detail or gift.url.
+    // Lang::FormatCountDecimal with Russian UI grouping; the serial comes
+    // from the actual integer, never guessed from gift.detail or gift.url.
     pure function gift-number(value: int) -> string {
         if value < 1000 { return "" + value; }
         let units = root.triple(mod(value, 1000));
         let thousands = floor(value / 1000);
-        if value < 1000000 { return thousands + "," + units; }
+        if value < 1000000 { return thousands + " " + units; }
         let middle = root.triple(mod(thousands, 1000));
         let millions = floor(value / 1000000);
-        if value < 1000000000 { return millions + "," + middle + "," + units; }
-        return floor(value / 1000000000) + "," + root.triple(mod(millions, 1000)) + "," + middle + "," + units;
+        if value < 1000000000 { return millions + " " + middle + " " + units; }
+        return floor(value / 1000000000) + " " + root.triple(mod(millions, 1000)) + " " + middle + " " + units;
     }
     public function scroll-by(delta: length) {
         scroll.viewport-y = clamp(scroll.viewport-y + delta, min(0px, scroll.height - content.height), 0px);
@@ -252,7 +257,7 @@ export component GiftDetail inherits Rectangle {
                     // body then inserts two 6px skips before the title.
                     regular-title := Text {
                         visible: !root.gift.collectible; x: 24px; y: 155px; width: max(1px, parent.width - 48px); height: self.preferred-height;
-                        text: root.gift.title == "" ? (root.gift.mine ? "Полученный подарок" : "Подарок") : root.gift.title;
+                        text: root.receipt-title;
                         font-size: 16px; font-weight: 600; color: Theme.ink; horizontal-alignment: center; wrap: word-wrap;
                     }
                     // UniqueGiftCover::layoutContent groups title and #number
@@ -286,13 +291,13 @@ export component GiftDetail inherits Rectangle {
                         visible: !root.gift.collectible && root.gift.mine;
                         x: 24px; y: 6px; width: max(1px, parent.width - 48px);
                         height: self.visible ? self.preferred-height : 0px;
-                        text: "Этот подарок можно оставить в своём профиле."; font-size: 13px; color: Theme.ink;
+                        text: "Этот подарок отображается в вашем профиле."; font-size: 13px; color: Theme.ink;
                         horizontal-alignment: center; wrap: word-wrap;
                     }
                     table := Rectangle {
                         x: 24px; y: root.gift.collectible ? 12px + 6px + 6px + 4px : 6px + 6px + 4px + about.height + (about.visible ? 6px : 0px);
                         width: max(1px, parent.width - 48px);
-                        height: 1px + owner-row.height + sender-row.height + date-row.height + model-row.height + symbol-row.height + backdrop-row.height + availability-row.height + value-row.height + status-row.height + message-row.height;
+                        height: 1px + owner-row.height + sender-row.height + date-row.height + model-row.height + symbol-row.height + backdrop-row.height + availability-row.height + value-row.height + status-row.height + message-row.height + original-row.height;
                         border-width: 1px; border-color: Theme.border; border-radius: 6px; clip: true;
                         private property <length> value-left: 2px + min(round((self.width - 3px) / 2px) * 1px, max(91px,
                             owner-row.shown ? owner-row.label-natural-width : 0px, sender-row.shown ? sender-row.label-natural-width : 0px,
@@ -309,7 +314,7 @@ export component GiftDetail inherits Rectangle {
                         }
                         sender-row := ReceiptRow {
                             x: 1px; y: owner-row.y + owner-row.height; width: parent.width - 2px; value-left: table.value-left - 1px;
-                            shown: !root.gift.collectible && root.gift.show-sender && (root.gift.sender-hidden || root.gift.sender != "");
+                            shown: !root.gift.collectible && !root.gift.to-self && root.gift.show-sender && (root.gift.sender-hidden || root.gift.sender != "");
                             label: "Отправитель"; value: root.gift.sender; peer: true; hidden: root.gift.sender-hidden;
                             initials: root.gift.sender-initials; avatar: root.gift.sender-avatar; has-avatar: root.gift.has-sender-avatar;
                         }
@@ -347,6 +352,16 @@ export component GiftDetail inherits Rectangle {
                             width: parent.width - 2px; value-left: table.value-left - 1px;
                             shown: !root.gift.collectible && root.gift.mine && root.gift.can-upgrade; label: "Статус"; value: "Неуникальный";
                         }
+                        original-row := Rectangle {
+                            x: 1px; y: message-row.y + message-row.height; width: parent.width - 2px;
+                            visible: root.gift.collectible && root.gift.has-original-info;
+                            height: self.visible ? origin.preferred-height + 19px : 0px;
+                            origin := StyledText {
+                                x: 13px; y: 9px; width: max(1px, parent.width - 26px); height: self.preferred-height;
+                                text: root.gift.original-info; default-font-size: 12px; default-color: Theme.ink; link-color: Theme.accent;
+                                link-clicked(url) => { /* Peer/attribute actions are not implemented. */ }
+                            }
+                        }
                         message-row := Rectangle {
                             x: 1px; y: status-row.y + status-row.height; width: parent.width - 2px;
                             visible: !root.gift.collectible && root.gift.has-message;
@@ -370,7 +385,7 @@ export component GiftDetail inherits Rectangle {
         // normal-height receipts retain upstream cover coordinates unchanged.
         if root.scrolled : Rectangle {
             width: parent.width; height: min(48px, scroll.height); background: Theme.surface;
-            Text { x: 24px; width: max(1px, parent.width - 24px - 88px); height: parent.height; text: root.gift.title; font-size: 16px; font-weight: 600; color: Theme.ink; vertical-alignment: center; overflow: elide; }
+            Text { x: 24px; width: max(1px, parent.width - 24px - 88px); height: parent.height; text: root.receipt-title; font-size: 16px; font-weight: 600; color: Theme.ink; vertical-alignment: center; overflow: elide; }
         }
         footer := Rectangle {
             y: parent.height - 75px; width: parent.width; height: 75px; background: Theme.surface;

@@ -145,6 +145,7 @@ impl Demo {
         ui.invoke_clear_raster_cache();
     }
     fn release_avatars(&mut self, ui: &Desktop) {
+        self.bridge.cancel_avatars();
         let mut ids = vec![0];
         for chat in &mut self.chats {
             ids.push(chat.row.id);
@@ -285,6 +286,7 @@ impl Demo {
     ) -> bool {
         if !ui.get_window_visible()
             || ui.get_auth_required()
+            || pixels.width() == 0 || pixels.height() == 0
             || pixels.width() > 256
             || pixels.height() > 256
         {
@@ -295,6 +297,7 @@ impl Demo {
             self.bridge.forget_avatars(vec![id]);
             return false;
         }
+        self.bridge.complete_avatar(id);
         let image = pixels.image();
         if id == 0 {
             ui.set_user_avatar(image.clone());

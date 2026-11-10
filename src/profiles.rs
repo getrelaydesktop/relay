@@ -482,11 +482,11 @@ async fn peer_details(
         tl::enums::Peer::Chat(id) => chats
             .iter()
             .map(|c| Peer::from_raw(client, c.clone()))
-            .find(|p| p.id().bare_id() == id.chat_id && matches!(p, Peer::Group(_))),
+            .find(|p| p.id().bare_id() == Some(id.chat_id) && matches!(p, Peer::Group(_))),
         tl::enums::Peer::Channel(id) => chats
             .iter()
             .map(|c| Peer::from_raw(client, c.clone()))
-            .find(|p| p.id().bare_id() == id.channel_id && !matches!(p, Peer::User(_))),
+            .find(|p| p.id().bare_id() == Some(id.channel_id) && !matches!(p, Peer::User(_))),
     };
     if let Some(peer) = resolved {
         (
@@ -498,7 +498,7 @@ async fn peer_details(
     }
 }
 
-fn decimal_count(value: i64) -> String {
+pub(crate) fn decimal_count(value: i64) -> String {
     let digits = value.to_string();
     let mut result = String::new();
     for (index, ch) in digits.chars().enumerate() {
@@ -592,6 +592,28 @@ pub async fn load_gift_media(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_gift_details_preserve_real_participants_and_utf16_message_styles() {
+        let body = "😀 **Привет**";
+        let message = tl::types::TextWithEntities {
+            text: body.into(),
+            entities: vec![tl::types::MessageEntityBold { offset: 5, length: 6 }.into()],
+        }.into();
+        let (text, entities, prefix) = original_info(
+            Some("😀 Алексей"), "Мария", 1_700_000_000, Some(message),
+        );
+        assert!(text.starts_with("Подарок от 😀 Алексей для Мария"));
+        assert!(text.ends_with(body));
+        let formatted = crate::rich_text::format(&text, &entities, prefix);
+        let paragraph = &formatted.as_ref()[0];
+        assert_eq!(paragraph.text, text);
+        assert_eq!(&text[paragraph.formatting[0].range.clone()], "Привет");
+        let (hidden, entities, _) = original_info(None, "Мария", 1_700_000_000, None);
+        assert!(hidden.starts_with("Подарок для Мария"));
+        assert!(!hidden.contains("Алексей"));
+        assert!(entities.is_empty());
+    }
+
     #[test]
     fn gift_counts_and_rarities_preserve_fractional_metadata() {
         assert_eq!(limited_badge(5000), "1 из 5K");

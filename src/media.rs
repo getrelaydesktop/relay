@@ -100,6 +100,17 @@ pub const DECODED_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 // a timed-out future does not stop an already-running image decoder.
 pub static DECODE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
+pub async fn decode_work<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Box<dyn std::error::Error + Send + Sync>> {
+    let permit = DECODE_SLOTS.acquire().await?;
+    Ok(tokio::task::spawn_blocking(move || {
+        // Cancellation of the async caller does not release a running decoder.
+        let _permit = permit;
+        work()
+    }).await?)
+}
+
 pub fn rgba_fits(width: u32, height: u32) -> bool {
     width != 0
         && height != 0
@@ -130,6 +141,38 @@ mod tests {
         assert!(!rgba_fits(u32::MAX, u32::MAX));
         assert!(!rgba_fits(0, 1));
     }
+    #[test]
+    fn prepared_pixels_share_storage_with_the_ui_image() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Pixels>();
+        let pixels: Pixels = image::RgbaImage::from_pixel(8, 4, image::Rgba([10, 20, 30, 255])).into();
+        let clone = pixels.clone();
+        let ui_buffer = pixels.image().to_rgba8().unwrap();
+        assert_eq!(pixels.0.as_slice().as_ptr(), clone.0.as_slice().as_ptr());
+        assert_eq!(pixels.0.as_slice().as_ptr(), ui_buffer.as_slice().as_ptr());
+        assert_eq!(pixels.len(), 8 * 4 * 4);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_blocking_decode_keeps_its_slot_until_the_worker_finishes() {
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (finish, released) = std::sync::mpsc::channel();
+        let caller = tokio::spawn(decode_work(move || {
+            let _ = started.send(());
+            let _ = released.recv();
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(2), ready).await.unwrap().unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        let available_while_running = DECODE_SLOTS.available_permits();
+        // Always unblock the worker before an assertion could unwind the test.
+        finish.send(()).unwrap();
+        assert_eq!(available_while_running, 0);
+        let permit = tokio::time::timeout(std::time::Duration::from_secs(2), DECODE_SLOTS.acquire())
+            .await.unwrap().unwrap();
+        drop(permit);
+    }
+
     #[tokio::test]
     async fn cancelling_a_scope_interrupts_waiting_jobs() {
         let scope = Scope::default();

@@ -6,7 +6,7 @@
 pub fn value(amount: i64, currency: &str, approximately: bool) -> String {
     let amount_abs = amount.unsigned_abs();
     if currency == "XTR" {
-        return format!("⭐{}", grouped(amount_abs, ','));
+        return format!("{}⭐{}", if approximately { "~" } else { "" }, grouped(amount_abs, ' '));
     }
     // The same currency rules (including the fallback) as the pinned source.
     // Tuple: thousands, decimal, left, space, exponent.
@@ -109,8 +109,9 @@ mod tests {
         assert_eq!(value(-1200, "USD", false), "−$12.00");
         assert_eq!(value(i64::MAX, "USD", true), "~$92,233,720,368,547,758.07");
         assert_eq!(value(i64::MIN, "USD", true), "~−$92,233,720,368,547,758.08");
-        // Stars are integral, not USD cents. Their grouping is locale-driven
-        // upstream; this deterministic fallback uses the formatter's comma.
-        assert_eq!(value(12345, "XTR", false), "⭐12,345");
+        // Stars are integral, not USD cents. Use Russian UI grouping;
+        // upstream obtains this separator from the active language pack.
+        assert_eq!(value(12345, "XTR", false), "⭐12 345");
+        assert_eq!(value(12345, "XTR", true), "~⭐12 345");
     }
 }

@@ -289,7 +289,7 @@ pub(crate) enum TgCommand {
     SendCode(String),
     SignInCode(String),
     SignInPassword(String),
-    LoadAvatar(i32),
+    LoadAvatar(i32, crate::media::Ticket),
     LoadHistory(i32),
     SendMessage(i32, String, Option<i32>),
     SendFormatted(i32, String, Option<i32>, Vec<tl::enums::MessageEntity>),
@@ -345,6 +345,7 @@ pub struct EventSink {
     notified: Arc<AtomicBool>,
     media_bytes: Arc<tokio::sync::Semaphore>,
     ticket: Option<crate::media::Ticket>,
+    avatar_scopes: Arc<Mutex<HashMap<i32, crate::media::Scope>>>,
 }
 impl EventSink {
     fn new(tx: mpsc::Sender<MediaEvent>) -> Self {
@@ -356,6 +357,20 @@ impl EventSink {
                 crate::media::MEDIA_MAILBOX_BYTES as usize,
             )),
             ticket: None,
+            avatar_scopes: Default::default(),
+        }
+    }
+    fn avatar_ticket(&self, id: i32) -> crate::media::Ticket {
+        self.avatar_scopes.lock().unwrap().entry(id).or_default().current()
+    }
+    fn forget_avatar(&self, id: i32) {
+        if let Some(scope) = self.avatar_scopes.lock().unwrap().remove(&id) {
+            scope.cancel();
+        }
+    }
+    fn cancel_avatars(&self) {
+        for (_, scope) in self.avatar_scopes.lock().unwrap().drain() {
+            scope.cancel();
         }
     }
     fn scoped(&self, ticket: crate::media::Ticket) -> Self {
@@ -473,9 +488,18 @@ impl TelegramBridge {
         ));
     }
     pub fn forget_avatars(&self, ids: Vec<i32>) {
+        for id in &ids {
+            self.errors.forget_avatar(*id);
+        }
         if !ids.is_empty() {
             self.send(TgCommand::ForgetAvatars(ids));
         }
+    }
+    pub fn cancel_avatars(&self) {
+        self.errors.cancel_avatars();
+    }
+    pub fn complete_avatar(&self, id: i32) {
+        self.errors.avatar_scopes.lock().unwrap().remove(&id);
     }
     pub fn notify_with(&self, wake: impl Fn() + Send + Sync + 'static) {
         *self.errors.wake.lock().unwrap() = Some(Box::new(wake));
@@ -617,7 +641,7 @@ impl TelegramBridge {
         self.send(TgCommand::LoadHistory(id));
     }
     pub fn load_avatar(&self, id: i32) {
-        self.send(TgCommand::LoadAvatar(id));
+        self.send(TgCommand::LoadAvatar(id, self.errors.avatar_ticket(id)));
     }
     pub fn send_message(&mut self, id: i32, text: &str, reply: Option<i32>) {
         self.send(TgCommand::SendMessage(id, text.to_owned(), reply));
@@ -900,8 +924,8 @@ impl Worker {
             }
         }
     }
-    fn load_avatar(&mut self, id: i32) {
-        if id == 3 || self.avatar_requests.contains(&id) {
+    fn load_avatar(&mut self, id: i32, ticket: crate::media::Ticket) {
+        if !ticket.is_current() || id == 3 || self.avatar_requests.contains(&id) {
             return;
         }
         let Some(peer) = self.avatar_peers.get(&id).cloned() else {
@@ -918,28 +942,23 @@ impl Worker {
         }
         let client = self.client.clone();
         let slots = self.avatar_slots.clone();
-        let tx = self.tx.clone();
+        let tx = self.tx.scoped(ticket.clone());
         self.avatar_tasks.spawn(async move {
-            let Ok(_permit) = slots.acquire().await else {
-                return;
-            };
-            let download = async {
-                let photo = peer.photo(false).await?.ok_or("Аватар недоступен")?;
-                download_image(&client, &photo, 1024 * 1024, 1024).await
-            };
-            if let Ok(Ok(pixels)) = tokio::time::timeout(Duration::from_secs(15), download).await {
-                // Lanczos resampling is CPU work: do not block the async
-                // executor while several visible avatars arrive together.
-                let Ok(pixels) = resize_image(pixels, 256).await else {
+            let work = async {
+                let Ok(_permit) = slots.acquire().await else {
                     return;
                 };
-                let _ = tx
-                    .send_media(TgEvent::AvatarReady {
-                        peer_id: id,
-                        pixels: pixels.into(),
-                    })
-                    .await;
-            }
+                let download = async {
+                    let photo = peer.photo(false).await?.ok_or("Аватар недоступен")?;
+                    download_image_fit(&client, &photo, 1024 * 1024, 1024, 256).await
+                };
+                if let Ok(Ok(pixels)) = tokio::time::timeout(Duration::from_secs(15), download).await {
+                    let _ = tx
+                        .send_media(TgEvent::AvatarReady { peer_id: id, pixels: pixels.into() })
+                        .await;
+                }
+            };
+            ticket.run(work).await;
         });
     }
     fn load_detail(
@@ -1193,6 +1212,7 @@ impl Worker {
         .to_owned();
         let mut dialogs = vec![];
         self.avatar_tasks.abort_all();
+        self.tx.cancel_avatars();
         self.peers.clear();
         self.avatar_peers.clear();
         self.avatar_requests.clear();
@@ -1465,8 +1485,8 @@ impl Worker {
                     messages,
                 });
             }
-            TgCommand::LoadAvatar(id) => {
-                self.load_avatar(id);
+            TgCommand::LoadAvatar(id, ticket) => {
+                self.load_avatar(id, ticket);
             }
             TgCommand::JoinChannel(id) => {
                 let peer = *self.peers.get(&id).ok_or("Канал не найден.")?;
@@ -1960,6 +1980,7 @@ impl Worker {
                 self.online_until.clear();
                 self.client.sign_out().await?;
                 self.avatar_tasks.abort_all();
+                self.tx.cancel_avatars();
                 self.peers.clear();
                 self.avatar_peers.clear();
                 self.avatar_requests.clear();
@@ -2027,6 +2048,67 @@ mod event_tests {
             })
             .unwrap();
         assert_eq!(wakeups.load(Ordering::Relaxed), 3);
+    }
+
+    fn tiny_pixels() -> crate::media::Pixels {
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([10, 20, 30, 255])).into()
+    }
+
+    #[test]
+    fn mailbox_holds_pixel_permits_until_the_envelope_is_dropped() {
+        let (tx, rx) = mpsc::channel();
+        let mut events = EventSink::new(tx);
+        events.media_bytes = Arc::new(tokio::sync::Semaphore::new(64));
+        events.send(TgEvent::ProfilePhotoReady { key: "self".into(), pixels: tiny_pixels() }).unwrap();
+        assert_eq!(events.media_bytes.available_permits(), 0);
+        assert!(events.send(TgEvent::AvatarReady { peer_id: 1, pixels: tiny_pixels() }).is_err());
+        // Control notifications are not blocked behind a full pixel budget.
+        events.send(TgEvent::OperationDone { message: "control".into() }).unwrap();
+        let envelope = rx.try_recv().unwrap();
+        assert_eq!(events.media_bytes.available_permits(), 0);
+        drop(envelope);
+        assert_eq!(events.media_bytes.available_permits(), 64);
+        assert!(matches!(rx.try_recv().unwrap().event, TgEvent::OperationDone { .. }));
+    }
+
+    #[tokio::test]
+    async fn cancelling_mailbox_admission_releases_the_waiter_without_publication() {
+        let (tx, rx) = mpsc::channel();
+        let mut events = EventSink::new(tx);
+        events.media_bytes = Arc::new(tokio::sync::Semaphore::new(64));
+        let held = events.media_bytes.clone().acquire_many_owned(64).await.unwrap();
+        let scope = crate::media::Scope::default();
+        let scoped = events.scoped(scope.next());
+        let (_, result) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                async { tokio::task::yield_now().await; scope.cancel(); },
+                scoped.send_media(TgEvent::ProfilePhotoReady { key: "self".into(), pixels: tiny_pixels() }),
+            )
+        }).await.unwrap();
+        assert!(result.is_ok());
+        assert!(rx.try_recv().is_err());
+        assert_eq!(events.media_bytes.available_permits(), 0);
+        drop(held);
+        assert_eq!(events.media_bytes.available_permits(), 64);
+    }
+
+    #[test]
+    fn avatar_eviction_invalidates_queued_pixels_and_a_same_id_can_reload() {
+        let (bridge, mut commands, events) = TelegramBridge::offline_for_rendering();
+        bridge.load_avatar(7);
+        let TgCommand::LoadAvatar(7, first) = commands.try_recv().unwrap() else { panic!("expected avatar") };
+        events.scoped(first.clone()).send(TgEvent::AvatarReady { peer_id: 7, pixels: tiny_pixels() }).unwrap();
+        bridge.forget_avatars(vec![7]);
+        assert!(!first.is_current(), "eviction must cancel without waiting for the backend command");
+        assert!(matches!(bridge.try_recv(), Some(TgEvent::DiscardedMedia)));
+        assert_eq!(events.media_bytes.available_permits(), crate::media::MEDIA_MAILBOX_BYTES as usize);
+        assert!(matches!(commands.try_recv().unwrap(), TgCommand::ForgetAvatars(_)));
+        bridge.load_avatar(7);
+        let TgCommand::LoadAvatar(7, reopened) = commands.try_recv().unwrap() else { panic!("expected reload") };
+        assert!(reopened.is_current());
+        assert!(!first.is_current());
+        bridge.cancel_avatars();
+        assert!(!reopened.is_current());
     }
 }
 fn media_key(media: Option<&grammers_client::media::Media>) -> String {
@@ -2100,6 +2182,7 @@ async fn thumbnail_image(
 
 // Reuse the runtime's bounded blocking pool instead of adding an OS thread
 // for each image. Skia images/models are still created on the Slint thread.
+#[cfg(test)]
 pub(crate) async fn resize_image(pixels: image::RgbaImage, limit: u32) -> Result<image::RgbaImage> {
     if pixels.width() <= limit && pixels.height() <= limit {
         return Ok(pixels);
@@ -2151,9 +2234,7 @@ pub(crate) async fn download_image_fit(
         }
         bytes.extend(chunk);
     }
-    let permit = crate::media::DECODE_SLOTS.acquire().await?;
-    tokio::task::spawn_blocking(move || -> Result<image::RgbaImage> {
-        let _permit = permit;
+    crate::media::decode_work(move || -> Result<image::RgbaImage> {
         let probe = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format()?;
         let (width, height) = probe.into_dimensions()?;
         if width > dimension_limit

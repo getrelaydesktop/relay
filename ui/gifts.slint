@@ -2,7 +2,6 @@
 // GPL-3.0: info_peer_gifts_common.cpp (Minimal), info_peer_gifts_widget.cpp,
 // ui/effects/credits.style and ui/top_background_gradient.cpp.
 import { Theme } from "theme.slint";
-import { VectorIcon } from "icons/vector-icons.slint";
 export struct GiftRow {
     key: string, title: string, detail: string, url: string,
     photo: image, has-photo: bool, collectible: bool,
@@ -16,6 +15,7 @@ export struct GiftRow {
     model: string, model-rarity: string, symbol: string, symbol-rarity: string,
     backdrop: string, backdrop-rarity: string, text-color: color,
     message: styled-text, has-message: bool, resale: bool, mine: bool, can-upgrade: bool,
+    original-info: styled-text, has-original-info: bool, to-self: bool,
 }
 export global TelegramGifts {
     out property <length> minimum-card-width: 107px; // (boxWideWidth 364 - 22 - 20) / 3
@@ -84,7 +84,9 @@ component GiftCard inherits Rectangle {
             ] : Image {
                 x: floor((-floor(parent.width / 3px) * 1px + point.x * (parent.width + 2 * floor(parent.width / 3px) * 1px)) / 1px) * 1px - self.width / 2;
                 y: floor(point.y * parent.height / 1px) * 1px - self.height / 2;
-                width: 40px * point.scale; height: self.width;
+                // PaintBgPoints renders GetSizeLarge(): 18 * 4 / 3 = 24.
+                // Its 36 px cache canvas includes transparent padding.
+                width: 24px * point.scale; height: self.width;
                 source: root.gift.pattern; colorize: root.gift.pattern-color; opacity: point.alpha; image-fit: contain;
             }
         }
@@ -96,7 +98,7 @@ component GiftCard inherits Rectangle {
         }
         if root.gift.show-sender && !root.gift.collectible : Rectangle {
             x: 2px; y: 2px; width: 24px; height: 24px; border-radius: 12px; clip: true;
-            background: Theme.badge-bg;
+            background: root.gift.sender-hidden ? @linear-gradient(180deg, #a767ff, #db5c9d) : Theme.badge-bg;
             if root.gift.has-sender-avatar && !root.gift.sender-hidden : Image {
                 width: parent.width; height: parent.height; source: root.gift.sender-avatar; image-fit: cover;
             }
@@ -104,7 +106,11 @@ component GiftCard inherits Rectangle {
                 width: parent.width; height: parent.height; text: root.gift.sender-initials;
                 font-size: 12px; color: white; horizontal-alignment: center; vertical-alignment: center;
             }
-            if root.gift.sender-hidden : VectorIcon { x: 4px; y: 4px; width: 16px; height: 16px; name: "profile"; tint: white; }
+            if root.gift.sender-hidden : Image {
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                width: parent.width * 32 / 46; height: self.width;
+                source: @image-url("icons/gift-hidden-author.png"); colorize: white;
+            }
         }
         if root.gift.collectible && root.gift.pinned : Rectangle {
             x: 2px; y: 2px; width: 24px; height: 24px; border-radius: 12px;
