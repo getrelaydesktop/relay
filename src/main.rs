@@ -57,6 +57,8 @@ struct Demo {
     pending_send: Option<sending::PendingSend>,
     network_poll: Timer,
     tray_scroll_y: f32,
+    #[cfg(windows)]
+    tray_placement: Option<window_chrome::Placement>,
     bridge: telegram::TelegramBridge,
 }
 
@@ -105,6 +107,8 @@ impl Demo {
             pending_send: None,
             network_poll: Timer::default(),
             tray_scroll_y: 0.0,
+            #[cfg(windows)]
+            tray_placement: None,
             bridge,
         }
     }
@@ -181,6 +185,13 @@ impl Demo {
             return;
         }
         self.tray_scroll_y = ui.get_history_scroll_y();
+        #[cfg(windows)]
+        {
+            self.tray_placement = ui
+                .window()
+                .with_winit_window(window_chrome::Placement::capture)
+                .flatten();
+        }
         ui.set_window_visible(false);
         // Detach the large delegate trees, but keep account/message/draft state.
         ui.set_messages(Default::default());
@@ -214,14 +225,31 @@ impl Demo {
     }
 
     fn resume_ui(&self, ui: &Desktop) {
+        if ui.get_window_visible() {
+            return;
+        }
         ui.set_window_visible(true);
         self.refresh_chats(ui);
         self.refresh_history(ui);
+        if ui.get_file_open() && !ui.get_file_path().is_empty() {
+            ui.invoke_preview_file();
+        }
         let y = self.tray_scroll_y;
+        #[cfg(windows)]
+        let placement = self.tray_placement;
         let weak = ui.as_weak();
         Timer::single_shot(Duration::ZERO, move || {
             if let Some(ui) = weak.upgrade() {
                 if ui.get_window_visible() {
+                    // The restore callback has called show() by this point.
+                    #[cfg(windows)]
+                    if let Some(placement) = placement {
+                        ui.window().with_winit_window(|window| {
+                            if let Err(error) = placement.restore(window) {
+                                eprintln!("Could not restore window placement: {error}");
+                            }
+                        });
+                    }
                     ui.set_history_scroll_y(y);
                 }
             }
@@ -1854,13 +1882,16 @@ fn main() -> Result<(), slint::PlatformError> {
     let weak = ui.as_weak();
     ui.on_preview_file(move || {
         let Some(ui) = weak.upgrade() else { return };
+        if !ui.get_window_visible() {
+            return;
+        }
         let path = ui.get_file_path().to_string();
         ui.set_file_preview_error(Default::default());
         let weak = ui.as_weak();
         std::thread::spawn(move || {
             let preview = details::file_preview(&path);
             let _ = weak.upgrade_in_event_loop(move |ui| {
-                if ui.get_file_path() != path {
+                if !ui.get_window_visible() || ui.get_file_path() != path {
                     return;
                 }
                 match preview {

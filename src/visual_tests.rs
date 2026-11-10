@@ -1663,9 +1663,9 @@ fn verify_profiles(window: &PreviewWindow, ui: &Desktop) {
                 photo: photo.clone(),
                 has_photo: i % 2 == 0,
                 collectible: i % 3 == 1,
-                center: Color::from_rgb(151, 194, 158),
-                edge: Color::from_rgb(61, 122, 88),
-                pattern_color: Color::from_rgb(30, 76, 49),
+                center: Color::from_rgb_u8(151, 194, 158),
+                edge: Color::from_rgb_u8(61, 122, 88),
+                pattern_color: Color::from_rgb_u8(30, 76, 49),
                 badge: if i % 3 == 1 {
                     "1 из 5K".into()
                 } else {
