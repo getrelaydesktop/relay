@@ -21,7 +21,7 @@ PNG masks remain available for comparison and regeneration.
 Copyright (c) 2014-2026 The Telegram Desktop Authors.
 See Telegram-LEGAL.txt and Telegram-GPL-3.0.txt.
 
-The bundled Open Sans Regular and SemiBold fonts come from Telegram/lib_ui/fonts.
+The bundled Open Sans Regular, SemiBold and Italic fonts come from Telegram/lib_ui/fonts.
 Digitized data copyright 2010-2011, Google Corporation.
 Licensed under Apache License 2.0. See OpenSans-Apache-2.0.txt.
 

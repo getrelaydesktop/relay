@@ -327,6 +327,7 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     verify_incoming(&window, &ui);
     verify_context_menu(&window, &ui);
     verify_photos_and_replies(&window, &ui);
+    verify_rich_text_and_composer(&window, &ui);
     ui.hide().unwrap();
     drop(ui);
 
@@ -1295,6 +1296,165 @@ fn verify_sending(window: &PreviewWindow, ui: &Desktop) {
         row.failed && !row.pending,
         "a disconnected bridge must leave retryable text instead of a stuck clock"
     );
+}
+
+fn verify_rich_text_and_composer(window: &PreviewWindow, ui: &Desktop) {
+    use grammers_tl_types::{enums::MessageEntity, types};
+    ui.set_auth_required(false);
+    ui.set_has_chat(true);
+    ui.set_show_chat(true);
+    ui.set_file_open(false);
+    ui.set_photo_open(false);
+    ui.set_menu_open(false);
+    ui.set_settings_open(false);
+    ui.set_chat_menu_open(false);
+    ui.set_reply_message(0);
+    ui.set_edit_message_id(0);
+    ui.set_draft(Default::default());
+    ui.set_message_busy(false);
+    ui.set_network_status(Default::default());
+    ui.set_active_chat(Demo::new().chats[0].row.clone());
+    let text = "Жирный · курсив · подчёркнутый · зачёркнутый\nМоноширинный код: cargo run --locked\nСсылка на Telegram\n\nПробелы и **буквальные звёздочки** сохраняются.";
+    let mut entities = Vec::new();
+    for (part, kind) in [
+        ("Жирный", 0),
+        ("курсив", 1),
+        ("подчёркнутый", 2),
+        ("зачёркнутый", 3),
+        ("cargo run --locked", 4),
+        ("Ссылка на Telegram", 5),
+    ] {
+        let start = text.find(part).unwrap();
+        let offset = text[..start].encode_utf16().count() as i32;
+        let length = part.encode_utf16().count() as i32;
+        entities.push(match kind {
+            0 => MessageEntity::Bold(types::MessageEntityBold { offset, length }),
+            1 => MessageEntity::Italic(types::MessageEntityItalic { offset, length }),
+            2 => MessageEntity::Underline(types::MessageEntityUnderline { offset, length }),
+            3 => MessageEntity::Strike(types::MessageEntityStrike { offset, length }),
+            4 => MessageEntity::Code(types::MessageEntityCode { offset, length }),
+            _ => MessageEntity::TextUrl(types::MessageEntityTextUrl {
+                offset,
+                length,
+                url: "https://telegram.org".into(),
+            }),
+        });
+    }
+    let mut row = message(text, "10:22", false);
+    row.id = 71;
+    row.date = "10 ноября".into();
+    row.has_formatting = true;
+    row.formatted_body = rich_text::format(text, &entities, 0);
+    ui.set_messages(ModelRc::new(VecModel::from(vec![row])));
+    let opened = Rc::new(RefCell::new(String::new()));
+    let links = Rc::clone(&opened);
+    ui.global::<Theme>()
+        .on_open_link(move |url| *links.borrow_mut() = url.to_string());
+    for (name, width, scale, dark) in [
+        ("formatted-dark", 1100, 1.0, true),
+        ("formatted-light", 1100, 1.0, false),
+        ("formatted-150", 1100, 1.5, true),
+        ("formatted-compact", 430, 1.0, true),
+    ] {
+        ui.global::<Theme>().set_dark(dark);
+        ui.global::<Theme>().set_context_pointer(false);
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        window.window.set_size(PhysicalSize::new(
+            (width as f32 * scale) as u32,
+            (720.0 * scale) as u32,
+        ));
+        for _ in 0..3 {
+            window.advance(500);
+            window.take_snapshot().unwrap();
+        }
+        assert!(
+            (ui.get_composer_height() - 46.0).abs() <= 1.0,
+            "empty composer must retain Telegram's 46px height"
+        );
+        let pixels = window.take_snapshot().unwrap();
+        save_animation_frame(name, &pixels);
+        if name == "formatted-dark" {
+            let link_pixel = (90..650)
+                .find_map(|y| {
+                    (420..1050).find_map(|x| {
+                        let p = pixels.as_slice()[y * 1100 + x];
+                        ([p.r, p.g, p.b] == [82, 136, 193]).then_some((x, y))
+                    })
+                })
+                .expect("formatted link must use Telegram's link color");
+            let position = LogicalPosition::new(link_pixel.0 as f32, link_pixel.1 as f32);
+            for event in [
+                WindowEvent::PointerPressed {
+                    position,
+                    button: slint::platform::PointerEventButton::Left,
+                },
+                WindowEvent::PointerReleased {
+                    position,
+                    button: slint::platform::PointerEventButton::Left,
+                },
+            ] {
+                window.dispatch_event(event);
+            }
+            assert_eq!(
+                &*opened.borrow(),
+                "https://telegram.org",
+                "native link must receive clicks through the message surface"
+            );
+            ui.global::<Theme>().set_context_pointer(true);
+            window.dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: slint::platform::PointerEventButton::Right,
+            });
+            window.dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: slint::platform::PointerEventButton::Right,
+            });
+            assert_eq!(
+                ui.get_selected_message(),
+                71,
+                "formatted messages must retain their context menu"
+            );
+            ui.set_chat_menu_open(false);
+            ui.global::<Theme>().set_context_pointer(false);
+        }
+    }
+    ui.set_draft("Первая строка\nВторая строка\nТретья строка".into());
+    window.advance(500);
+    window.take_snapshot().unwrap();
+    assert!(
+        ui.get_composer_height() > 70.0,
+        "composer must grow for line breaks"
+    );
+    ui.invoke_focus_composer();
+    window.dispatch_event(WindowEvent::KeyPressed {
+        text: slint::platform::Key::Shift.into(),
+    });
+    window.dispatch_event(WindowEvent::KeyPressed {
+        text: slint::platform::Key::Return.into(),
+    });
+    window.dispatch_event(WindowEvent::KeyReleased {
+        text: slint::platform::Key::Return.into(),
+    });
+    window.dispatch_event(WindowEvent::KeyReleased {
+        text: slint::platform::Key::Shift.into(),
+    });
+    assert_eq!(
+        ui.get_draft().matches('\n').count(),
+        3,
+        "Shift+Enter inserts a line break"
+    );
+    save_animation_frame("multiline-composer", &window.take_snapshot().unwrap());
+    ui.set_draft("Очень длинный черновик\n".repeat(30).into());
+    window.take_snapshot().unwrap();
+    assert!(
+        ui.get_composer_height() <= 166.0,
+        "long drafts must scroll inside a bounded composer"
+    );
+    ui.set_draft(Default::default());
+    window.take_snapshot().unwrap();
+    assert!((ui.get_composer_height() - 46.0).abs() <= 1.0);
 }
 
 fn save_animation_frame(name: &str, pixels: &slint::SharedPixelBuffer<Rgba8Pixel>) {

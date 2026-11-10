@@ -54,6 +54,8 @@ export global Theme {
     out property <length> bubble-radius: material ? 18px : fluent ? 10px : 6px;
 
     pure callback render-qr(string, int, color) -> image;
+    callback open-link(string);
+    in-out property <bool> context-pointer: false;
 }
 
 export component SendingClock inherits Rectangle {
@@ -308,6 +310,60 @@ export component Entry inherits Rectangle {
                 root.text = "";
                 root.edited();
                 input.focus();
+            }
+        }
+    }
+}
+
+// Telegram's composer grows with wrapped lines and keeps Enter / Shift+Enter
+// distinct. TextInput retains native cursor, selection, undo and IME behavior.
+export component Composer inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> placeholder-visible: true;
+    in property <bool> read-only: false;
+    out property <length> content-height: clamp(46px + measure.preferred-height - baseline.preferred-height, 46px, 166px);
+    callback accepted();
+    forward-focus: input;
+    clip: true;
+    baseline := Text { visible: false; text: " "; font-size: 13px; }
+    measure := Text {
+        visible: false;
+        width: max(1px, root.width - 12px);
+        text: root.text == "" ? " " : root.text;
+        font-size: 13px;
+        wrap: word-wrap;
+    }
+    if root.text == "" && root.placeholder-visible : Text {
+        x: 6px; y: 0px; width: parent.width - 12px; height: 46px;
+        text: root.placeholder; color: Theme.muted; font-size: 13px;
+        vertical-alignment: center; overflow: elide;
+    }
+    scroll := Flickable {
+        x: 6px; y: 14px; width: max(1px, parent.width - 12px);
+        height: max(18px, parent.height - 28px);
+        viewport-width: self.width;
+        viewport-height: max(self.height, input.preferred-height);
+        input := TextInput {
+            width: scroll.width; height: max(scroll.height, self.preferred-height);
+            text <=> root.text;
+            font-size: 13px; color: Theme.ink;
+            selection-background-color: Theme.accent;
+            selection-foreground-color: #ffffff;
+            single-line: false; wrap: word-wrap; read-only: root.read-only;
+            key-pressed(event) => {
+                if event.text == Key.Return && !event.modifiers.shift {
+                    if !root.read-only { root.accepted(); }
+                    return accept;
+                }
+                return reject;
+            }
+            cursor-position-changed(position) => {
+                if position.y + scroll.viewport-y < 0px { scroll.viewport-y = -position.y; }
+                if position.y + scroll.viewport-y > scroll.height - 18px {
+                    scroll.viewport-y = scroll.height - 18px - position.y;
+                }
+                scroll.viewport-y = clamp(scroll.viewport-y, min(0px, scroll.height - scroll.viewport-height), 0px);
             }
         }
     }
