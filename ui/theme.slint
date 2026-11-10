@@ -322,10 +322,11 @@ export component Composer inherits Rectangle {
     in property <string> placeholder;
     in property <bool> placeholder-visible: true;
     in property <bool> read-only: false;
-    out property <length> content-height: clamp(measure.preferred-height + 28px, 46px, 166px);
+    out property <length> content-height: clamp(46px + measure.preferred-height - baseline.preferred-height, 46px, 166px);
     callback accepted();
     forward-focus: input;
     clip: true;
+    baseline := Text { visible: false; text: " "; font-size: 13px; }
     measure := Text {
         visible: false;
         width: max(1px, root.width - 12px);

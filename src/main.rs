@@ -1047,7 +1047,7 @@ fn install_rendering(ui: &Desktop) {
                     .set_context_pointer(*button == MouseButton::Right);
             }
         }
-        slint::EventResult::Reject
+        slint::winit_030::EventResult::Propagate
     });
     ui.global::<TelegramMotion>()
         .on_send_rise(sending::rise_progress);
