@@ -1427,7 +1427,8 @@ export component Desktop inherits Window {
 
     BoxOverlay {
         shown: root.profile-open && !root.auth-required; width: root.width; height: root.height;
-        TouchArea { width: parent.width; height: parent.height; clicked => { root.profile-open = false; } }
+        // Keep the native 26px caption interactive while this modal is open.
+        TouchArea { y: 26px; width: parent.width; height: parent.height - 26px; clicked => { root.profile-open = false; } }
         profile-panel := ProfilePanel {
             x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
             width: min(TelegramProfile.desired-width, max(TelegramProfile.minimum-width, parent.width - 96px)); height: parent.height - 80px;

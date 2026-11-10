@@ -1694,6 +1694,9 @@ fn verify_profiles(window: &PreviewWindow, ui: &Desktop) {
         ));
         ui.global::<Theme>().set_dark(dark);
         ui.set_profile_scroll_y(0.0);
+        // Process Slint's deferred property-change handlers before advancing
+        // the animation clock; rendering alone does not start BoxOverlay.
+        window.advance(0);
         window.take_snapshot().unwrap();
         window.advance(250);
         window.take_snapshot().unwrap();
@@ -1749,7 +1752,7 @@ fn verify_profiles(window: &PreviewWindow, ui: &Desktop) {
         let p = pixels.as_slice()[y * pixels.width() as usize + center];
         assert!(
             p.r > 180 && p.g < 130,
-            "profile photo must render in upstream centered position"
+            "{name}: profile photo must render in upstream centered position; pixel={p:?}"
         );
         for offset in [60.0, 112.0, 150.0, 180.0] {
             ui.set_profile_scroll_y(-offset);
@@ -1785,6 +1788,7 @@ fn verify_profiles(window: &PreviewWindow, ui: &Desktop) {
             "{name}: top-right close button must dismiss the collapsed profile"
         );
         ui.set_profile_open(true);
+        window.advance(0);
         window.take_snapshot().unwrap();
         window.advance(250);
         assert_eq!(
