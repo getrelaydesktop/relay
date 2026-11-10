@@ -452,7 +452,6 @@ component ChatFoldersDialog inherits Rectangle {
     Flickable {
         x: 0px; y: 59px; width: parent.width; height: parent.height - 59px;
         viewport-width: self.width; viewport-height: self.height;
-        content-height: 330px + root.folders.length * 58px;
         Rectangle { x: 0px; y: 0px; width: parent.width; height: 220px; background: Theme.dark ? #202c3b : #eef4fb;
             Text { x: 20px; y: 24px; width: parent.width - 40px; text: "📁"; font-size: 52px; horizontal-alignment: center; }
             Text { x: 18px; y: 94px; width: parent.width - 36px; text: "Create folders for different groups of chats\nand quickly switch between them."; color: Theme.muted; font-size: 13px; horizontal-alignment: center; wrap: word-wrap; }
@@ -464,7 +463,7 @@ component ChatFoldersDialog inherits Rectangle {
             VectorIcon { x: 20px; y: 15px; width: 24px; height: 24px; name: "folder"; tint: Theme.accent; }
             Text { x: 60px; y: 10px; width: parent.width - 120px; text: folder.title; color: Theme.ink; font-size: 13px; font-weight: 600; overflow: elide; }
             Text { x: 60px; y: 31px; width: parent.width - 120px; text: folder.unread > 0 ? "\{folder.unread} unread" : "Chat folder"; color: Theme.muted; font-size: 12px; }
-            IconButton { x: parent.width - 50px; y: 9px; icon: "trash"; label: "Delete folder"; clicked => { root.delete-requested(folder.id); } }
+            IconButton { x: parent.width - 50px; y: 9px; icon: "close"; label: "Delete folder"; clicked => { root.delete-requested(folder.id); } }
             hit := TouchArea { width: parent.width; height: parent.height; mouse-cursor: pointer; }
         }
         ActionButton { x: 20px; y: 276px + root.folders.length * 58px; width: parent.width - 40px; height: 40px; text: "+  Create new folder"; primary: true; clicked => { root.create-requested(); } }
@@ -563,6 +562,7 @@ export component Desktop inherits Window {
     in-out property <float> photo-zoom: 1;
     in-out property <bool> has-chat: false;
     in-out property <bool> show-chat: false;
+    in-out property <bool> settings-open: false;
     in-out property <bool> folders-open: false;
     in-out property <int> settings-page: 0;
     in property <string> settings-error;
@@ -2276,7 +2276,9 @@ export component Desktop inherits Window {
     }
     public function close-photo() {
         if root.photo-from-profile {
-            root.profile-photo = root.photo-image; root.profile-has-photo = true; root.profile-open = true;
+            // The bounded profile thumbnail is retained for this return path.
+            // A full viewer image must not be promoted into an avatar cache.
+            root.profile-open = true;
             root.photo-from-profile = false; profile-panel.focus();
         } else { composer.focus(); }
         root.photo-open = false; root.photo-image = root.empty-image;
