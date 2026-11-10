@@ -251,7 +251,7 @@ fn portable_interface_renders_icons_at_multiple_scales() {
                 position,
                 button: slint::platform::PointerEventButton::Left,
             });
-            pixels = window.take_snapshot().unwrap();
+            window.take_snapshot().unwrap();
             window.advance(500);
             pixels = window.take_snapshot().unwrap();
         }
@@ -1619,6 +1619,55 @@ fn verify_maximized_history_work(window: &PreviewWindow, ui: &Desktop) {
         requested.borrow().is_empty(),
         "resolved details must not be requested again"
     );
+    // Resolved photos still report visibility, but their timer must not read
+    // row positions during delegate construction. Query layout by scrolling
+    // immediately after replacing the model, before the first snapshot.
+    let visibility = Rc::new(RefCell::new(Vec::new()));
+    let calls = visibility.clone();
+    ui.on_detail_visibility(move |id, visible| calls.borrow_mut().push((id, visible)));
+    let preview = slint_image(&image::RgbaImage::from_pixel(
+        32,
+        24,
+        image::Rgba([20, 160, 80, 255]),
+    ));
+    for index in [0, 399] {
+        let mut row = rows.row_data(index).unwrap();
+        row.is_photo = true;
+        row.has_preview = true;
+        row.preview = preview.clone();
+        row.photo_width = 640;
+        row.photo_height = 480;
+        rows.set_row_data(index, row);
+    }
+    ui.set_messages(ModelRc::new(VecModel::from(rows.iter().collect::<Vec<_>>())));
+    ui.invoke_scroll_to_bottom();
+    settle();
+    assert!(visibility.borrow().contains(&(400, true)));
+    assert!(visibility.borrow().contains(&(1, false)));
+    let reports_at_rest = visibility.borrow().len();
+    settle();
+    assert_eq!(
+        visibility.borrow().len(),
+        reports_at_rest,
+        "idle photos must not repeatedly report visibility"
+    );
+    visibility.borrow_mut().clear();
+    ui.set_history_scroll_y(0.0);
+    settle();
+    assert!(
+        visibility.borrow().contains(&(400, false)),
+        "scrolling must evict a resolved photo that left the viewport"
+    );
+    assert!(visibility.borrow().contains(&(1, true)));
+    visibility.borrow_mut().clear();
+    ui.set_window_visible(false);
+    settle();
+    assert!(visibility.borrow().contains(&(1, false)));
+    visibility.borrow_mut().clear();
+    ui.set_window_visible(true);
+    settle();
+    assert!(visibility.borrow().contains(&(1, true)));
+    ui.on_detail_visibility(|_, _| {});
     ui.on_request_details(|_| {});
 }
 

@@ -1830,7 +1830,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
     ui.on_request_avatar(move |id| {
         let Some(_ui) = weak.upgrade() else { return };
-        let mut state = state.borrow_mut();
+        let state = state.borrow();
         if state.live_mode && state.chats.iter().any(|chat| chat.row.id == id) {
             state.bridge.load_avatar(id);
         }

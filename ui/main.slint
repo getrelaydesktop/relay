@@ -1222,11 +1222,13 @@ export component Desktop inherits Window {
                             property <bool> media-visible: root.conversation-visible && !root.auth-required
                                 && history-items.y + self.y + history.viewport-y < history.view-height + 150px
                                 && history-items.y + self.y + history.viewport-y + self.height > -150px;
-                            // Read geometry and evict images after layout. Already
-                            // resolved photos must also report leaving the viewport.
+                            // Timer bindings are evaluated while layout creates rows.
+                            // Arm from data/generation only; read viewport geometry in
+                            // the deferred callback, after that layout has completed.
+                            // Resolved photos still need visibility/eviction updates.
                             Timer {
-                                running: message.id > 0 && ((message.is-photo && parent.media-state != (parent.media-visible ? 1 : 0))
-                                    || (parent.needs-details && parent.media-visible && parent.scanned-generation != root.details-generation));
+                                running: message.id > 0 && (message.is-photo || parent.needs-details)
+                                    && parent.scanned-generation != root.details-generation;
                                 interval: 1ms;
                                 triggered => {
                                     parent.scanned-generation = root.details-generation;
