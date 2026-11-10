@@ -10,6 +10,7 @@ The dialog date now uses `dialogsDateFont` (13px), unread counters use
 reserve the actual date and receipt width instead of a fixed text column.
 Existing 62px dialog rows, 46px avatars, 430px message width and 11/8px message
 padding remain based on upstream `dialogs.style` and `chat.style`.
+Reply text uses the 13px message font and a 2px by 36px quote bar.
 
 Message entities survive history, updates and send acknowledgements. Telegram's
 UTF-16 offsets are mapped to UTF-8 byte spans without interpreting the message
@@ -28,6 +29,7 @@ The composer wraps and grows from 46px up to 166px, with scrolling for longer
 drafts. Enter sends; Shift+Enter inserts a newline. History height and the
 sending animation's clipping band follow the actual composer height. Existing
 draft text, IME, cursor, selection and undo use the native TextInput.
+Attachment, emoji and send buttons stay aligned with the bottom of the field.
 
 ## Verification
 

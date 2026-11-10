@@ -1313,7 +1313,7 @@ fn verify_rich_text_and_composer(window: &PreviewWindow, ui: &Desktop) {
     ui.set_draft(Default::default());
     ui.set_message_busy(false);
     ui.set_network_status(Default::default());
-    ui.set_active_chat(Demo::new().chats[0].row.clone());
+    ui.set_active_chat(Demo::demo_chats()[0].row.clone());
     let text = "Жирный · курсив · подчёркнутый · зачёркнутый\nМоноширинный код: cargo run --locked\nСсылка на Telegram\n\nПробелы и **буквальные звёздочки** сохраняются.";
     let mut entities = Vec::new();
     for (part, kind) in [
@@ -1427,6 +1427,15 @@ fn verify_rich_text_and_composer(window: &PreviewWindow, ui: &Desktop) {
         ui.get_composer_height() > 70.0,
         "composer must grow for line breaks"
     );
+    let multiline = window.take_snapshot().unwrap();
+    assert!(
+        (686..713).any(|y| (396..416).any(|x| {
+            let p = multiline.as_slice()[y * 430 + x];
+            [p.r, p.g, p.b] == [82, 136, 193]
+        })),
+        "send button must stay at the bottom of a multiline composer"
+    );
+    save_animation_frame("multiline-composer", &multiline);
     ui.invoke_focus_composer();
     window.dispatch_event(WindowEvent::KeyPressed {
         text: slint::platform::Key::Shift.into(),
@@ -1445,7 +1454,6 @@ fn verify_rich_text_and_composer(window: &PreviewWindow, ui: &Desktop) {
         3,
         "Shift+Enter inserts a line break"
     );
-    save_animation_frame("multiline-composer", &window.take_snapshot().unwrap());
     ui.set_draft("Очень длинный черновик\n".repeat(30).into());
     window.take_snapshot().unwrap();
     assert!(

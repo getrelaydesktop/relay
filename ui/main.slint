@@ -315,14 +315,14 @@ component Bubble inherits Rectangle {
         default-font-size: 13px;
         default-font-family: "Open Sans";
     }
-    quote-measure := Text { visible: false; text: root.message.reply-author + "\n" + root.message.reply-body; font-size: 12px; }
+    quote-measure := Text { visible: false; text: root.message.reply-author + "\n" + root.message.reply-body; font-size: 13px; }
     Rectangle { x: 0px; y: 0px; width: parent.width; height: parent.height; border-radius: 8px; background: Theme.accent.transparentize(0.75); opacity: focus-motion.value; }
     if root.message.reply-to > 0 : Rectangle {
         x: root.left-pad + 8px; y: 6px; width: root.body-width - 16px; height: 38px;
         border-radius: 4px; background: Theme.accent.transparentize(0.9); opacity: root.sending-mix;
-        Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: root.outgoing ? Theme.outgoing-check : Theme.accent; border-radius: 1.5px; }
-        Text { x: 9px; y: 1px; width: parent.width - 14px; height: 17px; text: root.message.reply-author != "" ? root.message.reply-author : "Ответ на сообщение"; font-size: 12px; font-weight: 600; color: root.outgoing ? Theme.outgoing-check : Theme.accent; overflow: elide; }
-        Text { x: 9px; y: 18px; width: parent.width - 14px; height: 17px; text: root.message.reply-body != "" ? root.message.reply-body : "Загрузка сообщения…"; font-size: 12px; color: Theme.ink; overflow: elide; }
+        Rectangle { x: 1px; y: 1px; width: 2px; height: 36px; background: root.outgoing ? Theme.outgoing-check : Theme.accent; border-radius: 1px; }
+        Text { x: 10px; y: 0px; width: parent.width - 15px; height: 19px; text: root.message.reply-author != "" ? root.message.reply-author : "Ответ на сообщение"; font-size: 13px; font-weight: 600; color: root.outgoing ? Theme.outgoing-check : Theme.accent; overflow: elide; }
+        Text { x: 10px; y: 19px; width: parent.width - 15px; height: 19px; text: root.message.reply-body != "" ? root.message.reply-body : "Загрузка сообщения…"; font-size: 13px; color: Theme.ink; overflow: elide; }
     }
     if root.message.is-photo : Rectangle {
         x: root.left-pad + 8px; y: 8px + root.quote-height; width: root.body-width - 16px; height: root.photo-height;
@@ -923,7 +923,7 @@ export component Desktop inherits Window {
                 }
                 IconButton {
                     x: 5px;
-                    y: 3px;
+                    y: parent.height - 43px;
                     icon: "clip";
                     label: "Send a file";
                     visible: root.chat-can-write;
@@ -944,7 +944,7 @@ export component Desktop inherits Window {
                 }
                 IconButton {
                     x: parent.width - 86px;
-                    y: 3px;
+                    y: parent.height - 43px;
                     icon: "smile";
                     label: "Emoji";
                     visible: root.chat-can-write;
@@ -953,7 +953,7 @@ export component Desktop inherits Window {
                 }
                 IconButton {
                     x: parent.width - 44px;
-                    y: 3px;
+                    y: parent.height - 43px;
                     icon: root.draft == "" ? "mic" : "send";
                     label: "Send message";
                     visible: root.chat-can-write;
