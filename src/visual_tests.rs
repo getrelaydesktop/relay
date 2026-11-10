@@ -331,6 +331,7 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     verify_context_menu(&window, &ui);
     verify_photos_and_replies(&window, &ui);
     verify_rich_text_and_composer(&window, &ui);
+    verify_profiles(&window, &ui);
     verify_maximized_history_work(&window, &ui);
     verify_network_burst_yields(&window, &ui);
     ui.hide().unwrap();
@@ -1621,6 +1622,106 @@ fn verify_maximized_history_work(window: &PreviewWindow, ui: &Desktop) {
         "resolved details must not be requested again"
     );
     ui.on_request_details(|_| {});
+}
+
+fn verify_profiles(window: &PreviewWindow, ui: &Desktop) {
+    ui.set_auth_required(false);
+    ui.set_settings_open(false);
+    ui.set_menu_open(false);
+    ui.set_profile_key("test:profile".into());
+    ui.set_profile_name("Анна Смирнова".into());
+    ui.set_profile_initials("АС".into());
+    ui.set_profile_presence("в сети".into());
+    ui.set_profile_online(true);
+    ui.set_profile_is_user(true);
+    ui.set_profile_phone("+7 000 000 00 00".into());
+    ui.set_profile_username("@profile_test".into());
+    ui.set_profile_about(
+        "Тестовый профиль: длинное описание с переносом строки.\nТекст остаётся внутри панели."
+            .into(),
+    );
+    ui.set_profile_birthday("15 мая".into());
+    ui.set_profile_status(Default::default());
+    ui.set_profile_gifts_status(Default::default());
+    ui.set_profile_mute_ready(true);
+    ui.set_profile_has_photo(true);
+    let photo = slint_image(&image::RgbaImage::from_pixel(
+        80,
+        80,
+        image::Rgba([220, 90, 40, 255]),
+    ));
+    ui.set_profile_photo(photo.clone());
+    ui.set_profile_gifts(ModelRc::new(VecModel::from(
+        (0..12)
+            .map(|i| GiftRow {
+                key: format!("fixture:{i}").into(),
+                title: format!("Подарок {}", i + 1).into(),
+                detail: "100 Stars".into(),
+                photo: photo.clone(),
+                has_photo: i % 2 == 0,
+                ..Default::default()
+            })
+            .collect::<Vec<_>>(),
+    )));
+    ui.global::<Theme>().set_show_gifts(true);
+    ui.set_profile_open(true);
+    for (name, scale, dark, width) in [
+        ("profile-dark-100", 1.0, true, 1100),
+        ("profile-light-150", 1.5, false, 1100),
+        ("profile-dark-200", 2.0, true, 1100),
+        ("profile-narrow", 1.0, true, 400),
+    ] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        window.window.set_size(PhysicalSize::new(
+            (width as f32 * scale) as u32,
+            (720.0 * scale) as u32,
+        ));
+        ui.global::<Theme>().set_dark(dark);
+        ui.set_profile_scroll_y(0.0);
+        window.take_snapshot().unwrap();
+        window.advance(250);
+        window.take_snapshot().unwrap();
+        assert_eq!(
+            ui.get_profile_header_height(),
+            236.0,
+            "upstream expanded header"
+        );
+        let pixels = window.take_snapshot().unwrap();
+        save_animation_frame(name, &pixels);
+        let center = ((width as f32 / 2.0) * scale) as usize;
+        let y = ((40.0 + 24.0 + 40.0) * scale) as usize;
+        let p = pixels.as_slice()[y * pixels.width() as usize + center];
+        assert!(
+            p.r > 180 && p.g < 130,
+            "profile photo must render in upstream centered position"
+        );
+        ui.set_profile_scroll_y(-180.0);
+        window.take_snapshot().unwrap();
+        window.advance(1);
+        assert_eq!(
+            ui.get_profile_header_height(),
+            56.0,
+            "upstream collapsed header"
+        );
+        save_animation_frame(
+            &format!("{name}-collapsed"),
+            &window.take_snapshot().unwrap(),
+        );
+    }
+    ui.global::<Theme>().set_show_gifts(false);
+    ui.set_profile_scroll_y(0.0);
+    window.take_snapshot().unwrap();
+    window.advance(10);
+    save_animation_frame("profile-gifts-hidden", &window.take_snapshot().unwrap());
+    ui.set_profile_is_self(true);
+    save_animation_frame("profile-self", &window.take_snapshot().unwrap());
+    ui.set_profile_open(false);
+    ui.set_profile_has_photo(false);
+    ui.set_profile_gifts(Default::default());
+    ui.global::<Theme>().set_show_gifts(true);
+    window.advance(250);
 }
 
 fn save_animation_frame(name: &str, pixels: &slint::SharedPixelBuffer<Rgba8Pixel>) {

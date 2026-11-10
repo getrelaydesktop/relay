@@ -26,6 +26,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 
 #[derive(Debug, Clone, Default)]
 pub struct TgMessage {
+    pub sender_key: String,
     pub entities: Vec<tl::enums::MessageEntity>,
     pub entity_offset: i32,
     pub id: i32,
@@ -47,6 +48,7 @@ pub struct TgMessage {
 }
 #[derive(Debug, Clone)]
 pub struct TgDialog {
+    pub no_photo: bool,
     pub id: i32,
     pub title: String,
     pub initials: String,
@@ -91,6 +93,38 @@ pub struct TgFolder {
 }
 #[derive(Debug, Clone)]
 pub enum TgEvent {
+    ProfileReady {
+        key: String,
+        profile: crate::profiles::Profile,
+    },
+    GiftsReady {
+        key: String,
+        gifts: Vec<crate::profiles::Gift>,
+        next: String,
+        append: bool,
+    },
+    GiftPreview {
+        key: String,
+        gift_key: String,
+        pixels: image::RgbaImage,
+    },
+    GiftsFailed {
+        key: String,
+        message: String,
+    },
+    ProfileMuteResult {
+        key: String,
+        muted: Option<bool>,
+        message: String,
+    },
+    ProfileFailed {
+        key: String,
+        message: String,
+    },
+    FileSent {
+        path: PathBuf,
+    },
+    FilesSent,
     Presence {
         peer_id: i32,
         text: String,
@@ -205,6 +239,9 @@ pub enum TgEvent {
     },
 }
 pub(crate) enum TgCommand {
+    Profile(String, bool, Option<String>),
+    ProfileMessage(String),
+    ProfileMute(String, bool),
     Thumbnail(i32, i32),
     ResolveReply(i32, i32),
     JumpReply(i32, i32),
@@ -216,6 +253,9 @@ pub(crate) enum TgCommand {
     LoadAvatar(i32),
     LoadHistory(i32),
     SendMessage(i32, String, Option<i32>),
+    SendFormatted(i32, String, Option<i32>, Vec<tl::enums::MessageEntity>),
+    EditFormatted(i32, i32, String, Vec<tl::enums::MessageEntity>),
+    SendFiles(i32, Vec<PathBuf>, String, Option<i32>),
     SendFile(i32, PathBuf, String, Option<i32>),
     Download(i32, i32),
     ViewPhoto(i32, i32),
@@ -261,6 +301,15 @@ impl EventSink {
     }
 }
 impl TelegramBridge {
+    pub fn profile_message(&mut self, key: &str) {
+        self.send(TgCommand::ProfileMessage(key.into()));
+    }
+    pub fn profile_mute(&mut self, key: &str, muted: bool) {
+        self.send(TgCommand::ProfileMute(key.into(), muted));
+    }
+    pub fn profile(&mut self, key: &str, gifts: bool, offset: Option<String>) {
+        self.send(TgCommand::Profile(key.into(), gifts, offset));
+    }
     pub fn notify_with(&self, wake: impl Fn() + Send + Sync + 'static) {
         *self.errors.wake.lock().unwrap() = Some(Box::new(wake));
         self.errors.notified.store(false, Ordering::Release);
@@ -336,7 +385,10 @@ impl TelegramBridge {
             let message = "Соединение Telegram остановлено. Перезапустите приложение.";
             if matches!(
                 error.0,
-                TgCommand::SendMessage(..) | TgCommand::SendFile(..)
+                TgCommand::SendMessage(..)
+                    | TgCommand::SendFile(..)
+                    | TgCommand::SendFormatted(..)
+                    | TgCommand::SendFiles(..)
             ) {
                 let _ = self.errors.send(TgEvent::SendFailed {
                     message: message.into(),
@@ -377,6 +429,27 @@ impl TelegramBridge {
             caption.into(),
             reply,
         ));
+    }
+    pub fn send_formatted(
+        &mut self,
+        id: i32,
+        text: &str,
+        reply: Option<i32>,
+        entities: Vec<tl::enums::MessageEntity>,
+    ) {
+        self.send(TgCommand::SendFormatted(id, text.into(), reply, entities));
+    }
+    pub fn edit_formatted(
+        &mut self,
+        id: i32,
+        mid: i32,
+        text: &str,
+        entities: Vec<tl::enums::MessageEntity>,
+    ) {
+        self.send(TgCommand::EditFormatted(id, mid, text.into(), entities));
+    }
+    pub fn send_files(&mut self, id: i32, paths: Vec<PathBuf>, caption: &str, reply: Option<i32>) {
+        self.send(TgCommand::SendFiles(id, paths, caption.into(), reply));
     }
     pub fn download(&mut self, peer: i32, id: i32) {
         self.send(TgCommand::Download(peer, id));
@@ -458,6 +531,11 @@ fn message(m: &grammers_client::message::Message) -> TgMessage {
         None => String::new(),
     };
     TgMessage {
+        sender_key: m
+            .sender_id()
+            .filter(|id| id.kind() == grammers_session::types::PeerKind::User)
+            .map(|id| format!("user:{}", id.bare_id_unchecked()))
+            .unwrap_or_default(),
         // Media labels are prepended to body; retain the UTF-16 prefix length.
         entities: m.fmt_entities().cloned().unwrap_or_default(),
         entity_offset: if label.is_empty() || m.text().is_empty() {
@@ -466,9 +544,9 @@ fn message(m: &grammers_client::message::Message) -> TgMessage {
             label.encode_utf16().count() as i32 + 1
         },
         sender: m
-            .sender()
-            .and_then(|sender| sender.name())
-            .unwrap_or("Удалённый аккаунт")
+            .post_author()
+            .or_else(|| m.sender().and_then(|sender| sender.name()))
+            .unwrap_or("Неизвестный отправитель")
             .to_owned(),
         reply_to: m.reply_to_message_id().unwrap_or_default(),
         reply_quote,
@@ -745,6 +823,7 @@ impl Worker {
                 },
                 saved: false,
                 channel: ChannelAccess::for_peer(peer),
+                no_photo: crate::presence::no_photo(peer),
                 messages: vec![],
                 presence: crate::presence::for_peer(peer).0,
                 online: crate::presence::for_peer(peer).1,
@@ -842,6 +921,11 @@ impl Worker {
         self.avatar_requests.clear();
         self.online_until.clear();
         self.folder_dialogs.clear();
+        if let Some(reference) = me.to_ref().await? {
+            self.peers.insert(0, reference);
+            self.avatar_peers
+                .insert(0, grammers_client::peer::Peer::User(me.clone()));
+        }
         let mut iter = self.client.iter_dialogs();
         while dialogs.len() < 500 {
             let Some(d) = iter.next().await? else { break };
@@ -874,6 +958,7 @@ impl Worker {
                 },
                 saved,
                 channel: ChannelAccess::for_peer(d.peer()),
+                no_photo: crate::presence::no_photo(d.peer()),
                 messages: d.last_message.as_ref().map(message).into_iter().collect(),
                 presence: crate::presence::for_peer(d.peer()).0,
                 online: crate::presence::for_peer(d.peer()).1,
@@ -896,8 +981,122 @@ impl Worker {
         }
         Ok(())
     }
+    async fn profile_peer(&self, key: &str) -> Result<PeerRef> {
+        let peer = if key == "self" {
+            self.peers.get(&0).copied()
+        } else if let Some(id) = key
+            .strip_prefix("chat:")
+            .and_then(|s| s.parse::<i32>().ok())
+        {
+            self.peers.get(&id).copied()
+        } else if let Some(id) = key
+            .strip_prefix("user:")
+            .and_then(|s| s.parse::<i64>().ok())
+            .and_then(grammers_session::types::PeerId::user)
+        {
+            self.session.peer_ref(id).await?
+        } else {
+            None
+        };
+        peer.ok_or_else(|| "Профиль недоступен".into())
+    }
+
     async fn command(&mut self, cmd: TgCommand) -> Result<()> {
         match cmd {
+            TgCommand::ProfileMute(key, muted) => {
+                let result = tokio::time::timeout(Duration::from_secs(15), async {
+                    let peer = self.profile_peer(&key).await?;
+                    self.client
+                        .invoke(&tl::functions::account::UpdateNotifySettings {
+                            peer: tl::types::InputNotifyPeer { peer: peer.into() }.into(),
+                            settings: tl::types::InputPeerNotifySettings {
+                                mute_until: Some(if muted { i32::MAX } else { 0 }),
+                                show_previews: None,
+                                silent: None,
+                                sound: None,
+                                stories_muted: None,
+                                stories_hide_sender: None,
+                                stories_sound: None,
+                            }
+                            .into(),
+                        })
+                        .await?;
+                    Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+                })
+                .await;
+                let (muted, message) = match result {
+                    Ok(Ok(())) => (Some(muted), String::new()),
+                    Ok(Err(error)) => (None, error.to_string()),
+                    Err(_) => (None, "Превышено время ожидания Telegram".into()),
+                };
+                let _ = self.tx.send(TgEvent::ProfileMuteResult {
+                    key,
+                    muted,
+                    message,
+                });
+            }
+            TgCommand::ProfileMessage(key) => {
+                let reference = self.profile_peer(&key).await?;
+                let peer = self.client.resolve_peer(reference).await?;
+                let id = self
+                    .peers
+                    .iter()
+                    .find_map(|(&id, p)| (p.id == reference.id).then_some(id))
+                    .unwrap_or_else(|| self.peers.keys().max().copied().unwrap_or(10) + 1);
+                self.peers.insert(id, reference);
+                self.avatar_peers.insert(id, peer.clone());
+                self.track_presence(id, &peer);
+                let title = peer.name().unwrap_or("Telegram").to_owned();
+                let _ = self.tx.send(TgEvent::DialogOpened {
+                    dialog: TgDialog {
+                        id,
+                        initials: initials(&title),
+                        title,
+                        unread: 0,
+                        read_outbox_max_id: 0,
+                        folder: if matches!(peer, grammers_client::peer::Peer::User(_)) {
+                            2
+                        } else {
+                            1
+                        },
+                        saved: key == "self",
+                        channel: ChannelAccess::for_peer(&peer),
+                        no_photo: crate::presence::no_photo(&peer),
+                        messages: vec![],
+                        presence: crate::presence::for_peer(&peer).0,
+                        online: crate::presence::for_peer(&peer).1,
+                    },
+                });
+            }
+            TgCommand::Profile(key, gifts, offset) => {
+                if let Ok(peer) = self.profile_peer(&key).await {
+                    let client = self.client.clone();
+                    let tx = self.tx.clone();
+                    self.avatar_tasks.spawn(async move {
+                        let gift_page = offset.is_some();
+                        let result = if let Some(offset) = offset {
+                            crate::profiles::load_gifts(&client, peer, &key, &offset, &tx).await
+                        } else {
+                            crate::profiles::load(client, peer, key.clone(), gifts, tx.clone())
+                                .await
+                        };
+                        if let Err(error) = result {
+                            let message = error.to_string();
+                            let event = if gift_page {
+                                TgEvent::GiftsFailed { key, message }
+                            } else {
+                                TgEvent::ProfileFailed { key, message }
+                            };
+                            let _ = tx.send(event);
+                        }
+                    });
+                } else {
+                    let _ = self.tx.send(TgEvent::ProfileFailed {
+                        key,
+                        message: "Профиль недоступен".into(),
+                    });
+                }
+            }
             TgCommand::Thumbnail(id, mid) | TgCommand::ResolveReply(id, mid) => {
                 let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
                 let thumbnail = matches!(cmd, TgCommand::Thumbnail(..));
@@ -1086,6 +1285,7 @@ impl Worker {
                         },
                         saved: false,
                         channel: ChannelAccess::for_peer(&peer),
+                        no_photo: crate::presence::no_photo(&peer),
                         messages: vec![],
                         presence: crate::presence::for_peer(&peer).0,
                         online: crate::presence::for_peer(&peer).1,
@@ -1252,6 +1452,82 @@ impl Worker {
                         }
                     }
                 }
+            }
+            TgCommand::SendFormatted(id, text, reply, entities) => {
+                let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
+                let m = self
+                    .client
+                    .send_message(
+                        peer,
+                        grammers_client::message::InputMessage::new()
+                            .text(text)
+                            .fmt_entities(entities)
+                            .reply_to(reply),
+                    )
+                    .await?;
+                let _ = self.tx.send(TgEvent::MessageSent {
+                    peer_id: id,
+                    message: message(&m),
+                });
+            }
+            TgCommand::EditFormatted(id, mid, text, entities) => {
+                let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
+                self.client
+                    .edit_message(
+                        peer,
+                        mid,
+                        grammers_client::message::InputMessage::new()
+                            .text(text)
+                            .fmt_entities(entities),
+                    )
+                    .await?;
+                if let Some(m) = self
+                    .client
+                    .get_messages_by_id(peer, &[mid])
+                    .await?
+                    .into_iter()
+                    .flatten()
+                    .next()
+                {
+                    let _ = self.tx.send(TgEvent::MessageEdited {
+                        peer_id: id,
+                        message: message(&m),
+                    });
+                }
+                let _ = self.tx.send(TgEvent::EditCompleted {
+                    peer_id: id,
+                    message_id: mid,
+                });
+            }
+            TgCommand::SendFiles(id, paths, caption, reply) => {
+                let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
+                for (index, path) in paths.iter().enumerate() {
+                    let _ = self.tx.send(TgEvent::OperationDone {
+                        message: format!(
+                            "Загрузка {}/{}: {}",
+                            index + 1,
+                            paths.len(),
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ),
+                    });
+                    let file = self.client.upload_file(path).await?;
+                    let m = self
+                        .client
+                        .send_message(
+                            peer,
+                            grammers_client::message::InputMessage::new()
+                                .text(if index == 0 { caption.as_str() } else { "" })
+                                .file(file)
+                                .reply_to(reply),
+                        )
+                        .await?;
+                    let _ = self.tx.send(TgEvent::MessageSent {
+                        peer_id: id,
+                        message: message(&m),
+                    });
+                    let _ = self.tx.send(TgEvent::FileSent { path: path.clone() });
+                }
+                let _ = self.tx.send(TgEvent::FilesSent);
             }
             TgCommand::SendMessage(id, text, reply) => {
                 let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
@@ -1544,7 +1820,7 @@ async fn thumbnail_image(
 
 // Reuse the runtime's bounded blocking pool instead of adding an OS thread
 // for each image. Skia images/models are still created on the Slint thread.
-async fn resize_image(pixels: image::RgbaImage, limit: u32) -> Result<image::RgbaImage> {
+pub(crate) async fn resize_image(pixels: image::RgbaImage, limit: u32) -> Result<image::RgbaImage> {
     if pixels.width() <= limit && pixels.height() <= limit {
         return Ok(pixels);
     }
@@ -1569,7 +1845,7 @@ async fn fetch_photo(client: Client, peer: PeerRef, mid: i32) -> Result<image::R
     download_image(&client, &media, 32 * 1024 * 1024, 8192).await
 }
 
-async fn download_image(
+pub(crate) async fn download_image(
     client: &Client,
     media: &impl grammers_client::media::Downloadable,
     byte_limit: usize,
@@ -1661,8 +1937,8 @@ async fn run(mut commands: async_mpsc::UnboundedReceiver<TgCommand>, tx: EventSi
             _ = w.avatar_tasks.join_next(), if !w.avatar_tasks.is_empty() => {}
             cmd = commands.recv() => {
                 let Some(cmd) = cmd else { break };
-                let sending = matches!(cmd, TgCommand::SendMessage(..) | TgCommand::SendFile(..));
-                let timeout = if matches!(cmd, TgCommand::SendFile(..) | TgCommand::Download(..)) { 600 } else { 45 };
+                let sending = matches!(cmd, TgCommand::SendMessage(..) | TgCommand::SendFormatted(..) | TgCommand::SendFile(..) | TgCommand::SendFiles(..));
+                let timeout = if matches!(cmd, TgCommand::SendFile(..) | TgCommand::SendFiles(..) | TgCommand::Download(..)) { 600 } else { 45 };
                 let result = tokio::time::timeout(Duration::from_secs(timeout), w.command(cmd)).await;
                 let error = match result { Ok(Ok(())) => None, Ok(Err(e)) => Some(e.to_string()), Err(_) => Some("Telegram не ответил вовремя. Проверьте состояние перед повторной отправкой.".into()) };
                 if let Some(message) = error {

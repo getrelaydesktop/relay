@@ -21,6 +21,14 @@ PNG masks remain available for comparison and regeneration.
 Copyright (c) 2014-2026 The Telegram Desktop Authors.
 See Telegram-LEGAL.txt and Telegram-GPL-3.0.txt.
 
+Profile geometry and collapse equations in `ui/profile.slint` are derived from
+`info/info.style`, `info/profile/info_profile_top_bar.cpp`,
+`info_profile_top_bar.style`, `info_profile_top_bar_action_button.cpp`, and
+`info_profile_actions.style` at the same pinned Telegram Desktop commit.
+The `ui/icons/profile-*.svg` files are original SVG artwork from
+`Telegram/Resources/icons/profile`; `profile-more.png` is its grayscale mask
+converted to RGBA alpha. See `docs/telegram-profiles.md` for coverage and limits.
+
 The bundled Open Sans Regular, SemiBold and Italic fonts come from Telegram/lib_ui/fonts.
 Digitized data copyright 2010-2011, Google Corporation.
 Licensed under Apache License 2.0. See OpenSans-Apache-2.0.txt.

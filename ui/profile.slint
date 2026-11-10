@@ -1,0 +1,247 @@
+// Manual Slint port of Telegram Desktop v7.4.1 profile geometry.
+// Upstream: 157f5cfc85e2dd1fa67f129a5e31a81db5ddeb19, GPL-3.0.
+// See docs/telegram-profiles.md for source mapping and parity boundaries.
+import { Theme, ActionButton, IconButton, AvatarFill, MenuItem } from "theme.slint";
+import { RippleSurface } from "motion.slint";
+export struct GiftRow { key: string, title: string, detail: string, url: string, photo: image, has-photo: bool }
+export global TelegramProfile {
+    out property <length> desired-width: 392px;
+    out property <length> minimum-width: 324px;
+    out property <length> header-expanded: 236px;
+    out property <length> header-collapsed: 56px;
+    out property <length> photo-size: 80px;
+    out property <length> photo-top: 24px;
+    out property <length> title-top: 113px;
+    out property <length> status-top: 134px;
+    out property <length> action-height: 52px;
+    out property <length> action-padding: 18px;
+    out property <length> action-gap: 10px;
+    out property <length> section-skip: 7px;
+    out property <length> tabs-height: 48px;
+    out property <color> divider: Theme.hover;
+    out property <color> bold: Theme.dark ? Theme.ink : #222222;
+}
+component ProfileAction inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> enabled: true;
+    callback clicked();
+    border-radius: 8px;
+    background: Theme.surface.transparentize(0.16);
+    drop-shadow-blur: 1px; drop-shadow-color: #00000040;
+    opacity: self.height / TelegramProfile.action-height;
+    clip: true;
+    accessible-role: button; accessible-label: root.text; accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    property <float> icon-progress: clamp((self.height / TelegramProfile.action-height - 0.4) / 0.6, 0, 1);
+    Image {
+        x: (parent.width - self.width) / 2; y: 6px + (23px - self.height) / 2;
+        width: 23px * root.icon-progress; height: self.width;
+        source: root.icon; colorize: TelegramProfile.bold; image-fit: contain;
+        opacity: root.enabled ? root.icon-progress : root.icon-progress * 0.4;
+    }
+    Text { x: 4px; y: 30px; width: parent.width - 8px; height: 18px; text: root.text; font-size: 11px;
+        color: root.enabled ? Theme.ink : Theme.muted; horizontal-alignment: center; overflow: elide;
+    }
+    RippleSurface { width: parent.width; height: parent.height; border-radius: 8px; pressed: pointer.pressed && root.enabled; press-x: pointer.mouse-x; press-y: pointer.mouse-y; ink: Theme.ripple; }
+    pointer := TouchArea { width: parent.width; height: parent.height; enabled: root.enabled; mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default; clicked => { root.clicked(); } }
+}
+component ProfileLine inherits Rectangle {
+    in property <string> value;
+    in property <string> label;
+    in property <bool> link;
+    in property <bool> qr;
+    callback copied(string);
+    callback show-qr();
+    height: text.preferred-height + 16px + 2px + label.preferred-height;
+    text := Text { x: 23px; y: 9px; width: parent.width - 43px - (root.qr ? 34px : 0px); text: root.value;
+        color: root.link ? Theme.accent : Theme.ink; font-size: 13px; wrap: word-wrap;
+    }
+    label := Text { x: 23px; y: text.y + text.preferred-height + 2px; width: parent.width - 43px; text: root.label; color: Theme.muted; font-size: 13px; }
+    TouchArea { width: parent.width - (root.qr ? 54px : 0px); height: parent.height; mouse-cursor: pointer; clicked => { root.copied(root.value); } }
+    if root.qr : Rectangle {
+        x: parent.width - 54px; y: 7px; width: 34px; height: 34px;
+        // A QR glyph, not the actual encoded QR displayed by the dialog.
+        for pos in [{x: 7px, y: 7px}, {x: 20px, y: 7px}, {x: 7px, y: 20px}] : Rectangle {
+            x: pos.x; y: pos.y; width: 8px; height: 8px; border-width: 1.5px; border-color: Theme.accent;
+            Rectangle { x: 3px; y: 3px; width: 2px; height: 2px; background: Theme.accent; }
+        }
+        Rectangle { x: 20px; y: 20px; width: 3px; height: 8px; background: Theme.accent; }
+        Rectangle { x: 25px; y: 20px; width: 3px; height: 3px; background: Theme.accent; }
+        Rectangle { x: 23px; y: 25px; width: 5px; height: 3px; background: Theme.accent; }
+        TouchArea { width: parent.width; height: parent.height; mouse-cursor: pointer; clicked => { root.show-qr(); } }
+    }
+}
+export component ProfilePanel inherits Rectangle {
+    in property <bool> shown;
+    in property <string> profile-key;
+    in property <string> name;
+    in property <string> initials;
+    in property <string> presence;
+    in property <bool> online;
+    in property <bool> is-user: true;
+    in property <bool> is-self;
+    in property <bool> is-bot;
+    in property <string> username;
+    in property <string> phone;
+    in property <string> about;
+    in property <string> birthday;
+    in property <image> photo;
+    in property <bool> has-photo;
+    in property <bool> muted;
+    in property <bool> action-busy;
+    in property <[GiftRow]> gifts;
+    in property <string> status;
+    in property <string> gifts-status;
+    in property <string> qr-matrix;
+    in property <string> profile-link;
+    in property <bool> more;
+    in property <bool> busy;
+    in-out property <length> scroll-y <=> scroll.viewport-y;
+    out property <length> header-height: max(TelegramProfile.header-collapsed, TelegramProfile.header-expanded + min(0px, scroll.viewport-y));
+    out property <float> header-progress: clamp((root.header-height - 124px) / 112px, 0, 1);
+    private property <length> actions-height: TelegramProfile.action-height * clamp((root.header-height / 124px - 0.5) / 0.5, 0, 1);
+    private property <bool> menu-open;
+    private property <bool> qr-open;
+    private property <bool> gift-open;
+    private property <GiftRow> selected-gift;
+    private property <string> toast;
+    private property <bool> display-gifts: Theme.show-gifts && root.is-user;
+    private property <int> gift-columns: max(1, floor((root.width - 32px + 8px) / 112px));
+    private property <length> gift-width: (root.width - 32px - (root.gift-columns - 1) * 8px) / root.gift-columns;
+    callback closed();
+    callback view-photo();
+    callback load-more();
+    callback action(string);
+    changed shown => { if root.shown { root.scroll-y = 0px; keys.focus(); } else { root.menu-open = false; root.qr-open = false; root.gift-open = false; } }
+    changed profile-key => { root.scroll-y = 0px; root.menu-open = false; root.qr-open = false; root.gift-open = false; root.toast = ""; }
+    forward-focus: keys;
+    public function dismiss() {
+        if root.qr-open { root.qr-open = false; } else if root.gift-open { root.gift-open = false; }
+        else if root.menu-open { root.menu-open = false; } else { root.closed(); }
+    }
+    function copy-text(text: string) {
+        clipboard.text = text; clipboard.select-all(); clipboard.copy(); root.toast = "Скопировано";
+        toast-timer.start(); toast-timer.restart();
+    }
+    clipboard := TextInput { visible: false; read-only: true; }
+    toast-timer := Timer { running: false; interval: 1800ms; triggered => { self.stop(); root.toast = ""; } }
+    background: Theme.surface; border-radius: 8px; clip: true;
+    // Consume background clicks so they never fall through to the layer's close area.
+    TouchArea { width: parent.width; height: parent.height; }
+    keys := FocusScope { width: parent.width; height: parent.height; key-pressed(event) => {
+        if event.text == Key.Escape { root.dismiss(); return accept; } return reject;
+    } }
+    scroll := Flickable {
+        width: parent.width; height: parent.height;
+        viewport-width: self.width;
+        viewport-height: max(content.preferred-height, self.height + TelegramProfile.header-expanded - TelegramProfile.header-collapsed);
+        content := VerticalLayout {
+            width: scroll.width; spacing: 0px; padding: 0px;
+            Rectangle { height: TelegramProfile.header-expanded + TelegramProfile.section-skip; }
+            if root.phone != "" : ProfileLine { value: root.phone; label: "Телефон"; qr: root.is-self && root.username == "" && root.qr-matrix != ""; copied(text) => { root.copy-text(text); } show-qr => { root.qr-open = true; } }
+            if root.about != "" : ProfileLine { value: root.about; label: root.is-bot ? "Описание" : root.is-user ? "О себе" : "Описание"; copied(text) => { root.copy-text(text); } }
+            if root.username != "" : ProfileLine { value: root.username; label: "Имя пользователя"; link: true; qr: root.qr-matrix != ""; copied(text) => { root.copy-text(text); } show-qr => { root.qr-open = true; } }
+            if root.birthday != "" : ProfileLine { value: root.birthday; label: "День рождения"; copied(text) => { root.copy-text(text); } }
+            if root.status != "" : Rectangle {
+                height: status.preferred-height + 24px;
+                status := Text { x: 23px; y: 12px; width: parent.width - 43px; text: root.status; color: Theme.muted; wrap: word-wrap; font-size: 13px; }
+            }
+            if root.display-gifts : Rectangle { height: 22px; Rectangle { y: 7px; height: 8px; width: parent.width; background: TelegramProfile.divider; } }
+            if root.display-gifts : Rectangle {
+                height: TelegramProfile.tabs-height;
+                Rectangle {
+                    x: (parent.width - self.width) / 2; y: 6px; width: tab.preferred-width + 40px; height: 36px; border-radius: 18px;
+                    background: Theme.hover; border-width: 1px; border-color: Theme.border.transparentize(0.6);
+                    Rectangle { x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px; border-radius: 14px; background: Theme.accent.transparentize(0.88); }
+                    tab := Text { width: parent.width; height: parent.height; text: "Подарки"; color: Theme.accent; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+            if root.display-gifts && root.gifts.length > 0 : Rectangle {
+                height: 16px + ceil(root.gifts.length / root.gift-columns) * (root.gift-width + 40px);
+                for gift[index] in root.gifts : Rectangle {
+                    x: 16px + mod(index, root.gift-columns) * (root.gift-width + 8px);
+                    y: 8px + floor(index / root.gift-columns) * (root.gift-width + 40px);
+                    width: root.gift-width; height: root.gift-width + 32px;
+                    border-radius: 12px; background: TelegramProfile.divider; clip: true;
+                    Image { x: 8px; y: 4px; width: parent.width - 16px; height: parent.width - 8px; source: gift.has-photo ? gift.photo : @image-url("icons/profile-gift.svg"); image-fit: contain; colorize: gift.has-photo ? #00000000 : Theme.muted; }
+                    Text { x: 6px; y: parent.width - 2px; width: parent.width - 12px; height: 17px; text: gift.title; color: Theme.ink; font-size: 11px; font-weight: 600; horizontal-alignment: center; overflow: elide; }
+                    Text { x: 6px; y: parent.width + 15px; width: parent.width - 12px; height: 15px; text: gift.detail; color: Theme.muted; font-size: 10px; horizontal-alignment: center; overflow: elide; }
+                    TouchArea { width: parent.width; height: parent.height; mouse-cursor: pointer; clicked => { root.selected-gift = gift; root.gift-open = true; } }
+                }
+            }
+            if root.display-gifts && root.gifts-status != "" : Rectangle {
+                height: gift-status.preferred-height + 32px;
+                gift-status := Text { x: 23px; y: 16px; width: parent.width - 46px; text: root.gifts-status; color: Theme.muted; font-size: 13px; wrap: word-wrap; horizontal-alignment: center; }
+            }
+            if root.display-gifts && root.more : ActionButton { text: root.busy ? "Загрузка…" : "Показать ещё"; enabled: !root.busy; clicked => { root.load-more(); } }
+            Rectangle { height: 16px; }
+        }
+    }
+    // The header remains above the scroll body and collapses in two stages.
+    Rectangle {
+        width: parent.width; height: root.header-height; background: TelegramProfile.divider; clip: true;
+        Rectangle {
+            width: 20px + 60px * root.header-progress; height: self.width;
+            x: (parent.width - self.width) / 2; y: -20px + 44px * root.header-progress;
+            border-radius: self.width / 2; clip: true;
+            AvatarFill { width: parent.width; height: parent.height; top: #72d5fd; bottom: #2a9ef1; }
+            Text { width: parent.width; height: parent.height; text: root.initials; font-size: 28px * max(0.25, root.header-progress); color: white; horizontal-alignment: center; vertical-alignment: center; }
+            if root.has-photo : Image { width: parent.width; height: parent.height; source: root.photo; image-fit: cover; }
+            TouchArea { width: parent.width; height: parent.height; enabled: root.has-photo; mouse-cursor: root.has-photo ? MouseCursor.pointer : MouseCursor.default; clicked => { root.view-photo(); } }
+        }
+        Text {
+            width: min(self.preferred-width, parent.width - 48px - 36px * (1 - root.header-progress));
+            x: 16px * (1 - root.header-progress) + (parent.width - self.width) / 2 * root.header-progress;
+            y: 8px + 105px * root.header-progress; height: 20px;
+            text: root.name; color: TelegramProfile.bold; font-size: 14px; font-weight: 600; overflow: elide;
+        }
+        Text {
+            width: min(self.preferred-width, parent.width - 48px - 36px * (1 - root.header-progress));
+            x: 16px * (1 - root.header-progress) + (parent.width - self.width) / 2 * root.header-progress;
+            y: 28px + 106px * root.header-progress; height: 18px;
+            text: root.presence; color: root.online ? Theme.accent : Theme.muted; font-size: 13px; overflow: elide;
+        }
+        HorizontalLayout {
+            x: TelegramProfile.action-padding; y: parent.height - 16px - root.actions-height;
+            width: parent.width - 2 * TelegramProfile.action-padding; height: root.actions-height;
+            spacing: TelegramProfile.action-gap; padding: 0px;
+            ProfileAction { text: "Сообщение"; icon: @image-url("icons/profile-message.svg"); enabled: root.status == ""; clicked => { root.action("message"); } }
+            if !root.is-self : ProfileAction { text: root.muted ? "Вкл. звук" : "Выкл. звук"; icon: root.muted ? @image-url("icons/profile-unmute.svg") : @image-url("icons/profile-mute.svg"); enabled: root.is-user && !root.action-busy && root.status == ""; clicked => { root.action("mute"); } }
+            if root.is-user && !root.is-self && !root.is-bot : ProfileAction { text: "Позвонить"; icon: @image-url("icons/profile-call.svg"); enabled: false; }
+            ProfileAction { text: "Ещё"; icon: @image-url("icons/profile-more.png"); clicked => { root.menu-open = !root.menu-open; } }
+        }
+        IconButton { x: parent.width - 48px; y: 7px; icon: "close"; label: "Закрыть профиль"; clicked => { root.closed(); } }
+    }
+    if root.menu-open : Rectangle {
+        width: parent.width; height: parent.height;
+        TouchArea { width: parent.width; height: parent.height; clicked => { root.menu-open = false; } }
+        Rectangle {
+            x: max(8px, parent.width - 248px); y: min(root.header-height - 8px, parent.height - self.height - 8px);
+            width: 232px; height: root.profile-link != "" ? 108px : 40px; border-radius: 8px; background: Theme.surface; border-width: 1px; border-color: Theme.border;
+            MenuItem { y: 3px; width: parent.width; text: "Скопировать имя"; clicked => { root.copy-text(root.name); root.menu-open = false; } }
+            if root.profile-link != "" : MenuItem { y: 37px; width: parent.width; text: "Скопировать ссылку"; clicked => { root.copy-text(root.profile-link); root.menu-open = false; } }
+            if root.profile-link != "" : MenuItem { y: 71px; width: parent.width; text: "Показать QR-код"; clicked => { root.qr-open = true; root.menu-open = false; } }
+        }
+    }
+    if root.qr-open || root.gift-open : Rectangle {
+        width: parent.width; height: parent.height; background: #00000066;
+        TouchArea { width: parent.width; height: parent.height; clicked => { root.qr-open = false; root.gift-open = false; } }
+        Rectangle {
+            x: 16px; y: max(8px, (parent.height - self.height)/2); width: parent.width - 32px; height: min(352px, parent.height - 16px); border-radius: 8px; background: Theme.surface;
+            TouchArea { width: parent.width; height: parent.height; }
+            Text { x: 20px; y: 18px; width: parent.width - 64px; text: root.qr-open ? root.name : root.selected-gift.title; color: Theme.ink; font-size: 16px; font-weight: 600; overflow: elide; }
+            if root.qr-open : Image { x: (parent.width - self.width)/2; y: 58px; width: min(208px, parent.height - 144px); height: self.width; source: Theme.render-qr(root.qr-matrix, 256, Theme.ink); image-fit: contain; }
+            if root.gift-open : Image { x: (parent.width - self.width)/2; y: 54px; width: min(184px, parent.height - 144px); height: self.width; source: root.selected-gift.has-photo ? root.selected-gift.photo : @image-url("icons/profile-gift.svg"); image-fit: contain; }
+            Text { x: 20px; y: parent.height - 76px; width: parent.width - 40px; text: root.qr-open ? root.profile-link : root.selected-gift.detail; color: Theme.muted; font-size: 13px; horizontal-alignment: center; overflow: elide; }
+            ActionButton { x: 20px; y: parent.height - 50px; width: parent.width - 40px; text: root.qr-open ? "Скопировать ссылку" : root.selected-gift.url != "" ? "Открыть в Telegram" : "Закрыть";
+                clicked => { if root.qr-open { root.copy-text(root.profile-link); } else if root.selected-gift.url != "" { Theme.open-link(root.selected-gift.url); } else { root.gift-open = false; } }
+            }
+            IconButton { x: parent.width - 44px; y: 7px; icon: "close"; label: "Закрыть"; clicked => { root.qr-open = false; root.gift-open = false; } }
+        }
+    }
+    if root.toast != "" : Rectangle {
+        x: (parent.width - self.width)/2; y: parent.height - 64px; width: 156px; height: 36px; border-radius: 8px; background: Theme.selected;
+        Text { width: parent.width; height: parent.height; text: root.toast; color: Theme.selected-ink; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+    }
+}

@@ -11,6 +11,7 @@ pub struct Preferences {
     design: u8,
     dark: bool,
     accent: u8,
+    show_gifts: bool,
 }
 
 impl Default for Preferences {
@@ -19,6 +20,7 @@ impl Default for Preferences {
             design: 0,
             dark: true,
             accent: 0,
+            show_gifts: true,
         }
     }
 }
@@ -50,6 +52,7 @@ impl Preferences {
         let theme = ui.global::<Theme>();
         theme.set_design(i32::from(self.design));
         theme.set_dark(self.dark);
+        theme.set_show_gifts(self.show_gifts);
         theme.set_seed(ACCENTS[usize::from(self.accent)]);
     }
 
@@ -61,6 +64,7 @@ impl Preferences {
                 .filter(|design| *design <= 2)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Unsupported theme"))?,
             dark: theme.get_dark(),
+            show_gifts: theme.get_show_gifts(),
             accent: ACCENTS
                 .iter()
                 .position(|color| *color == theme.get_seed())
