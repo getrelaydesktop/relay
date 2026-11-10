@@ -26,6 +26,8 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 
 #[derive(Debug, Clone, Default)]
 pub struct TgMessage {
+    pub entities: Vec<tl::enums::MessageEntity>,
+    pub entity_offset: i32,
     pub id: i32,
     pub date: String,
     pub has_media: bool,
@@ -448,6 +450,13 @@ fn message(m: &grammers_client::message::Message) -> TgMessage {
         None => String::new(),
     };
     TgMessage {
+        // Media labels are prepended to body; retain the UTF-16 prefix length.
+        entities: m.fmt_entities().cloned().unwrap_or_default(),
+        entity_offset: if label.is_empty() || m.text().is_empty() {
+            0
+        } else {
+            label.encode_utf16().count() as i32 + 1
+        },
         sender: m
             .sender()
             .and_then(|sender| sender.name())

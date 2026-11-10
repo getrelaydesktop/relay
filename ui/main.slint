@@ -3,9 +3,10 @@ import { TelegramMotion, Motion, MessageSendMotion, MessageReceiveMotion, PopupR
 import { ListView } from "list-view.slint";
 import { AuthScreen } from "auth.slint";
 import { SettingsHome } from "settings-home.slint";
-import { Theme, ActionButton, Entry, IconButton, MenuItem, AvatarFill, BubbleShape, SendingClock } from "theme.slint";
+import { Theme, ActionButton, Entry, Composer, IconButton, MenuItem, AvatarFill, BubbleShape, SendingClock } from "theme.slint";
 import "fonts/OpenSans-Regular.ttf";
 import "fonts/OpenSans-SemiBold.ttf";
+import "fonts/OpenSans-Italic.ttf";
 export { Theme } from "theme.slint";
 export { TelegramMotion } from "motion.slint";
 
@@ -52,6 +53,8 @@ export struct MessageRow {
     has-media: bool,
     is-photo: bool,
     body: string,
+    formatted-body: styled-text,
+    has-formatting: bool,
     time: string,
     outgoing: bool,
     channel-post: bool,
@@ -175,7 +178,7 @@ component ChatTile inherits Rectangle {
     Text {
         x: 68px;
         y: 10px;
-        width: parent.width - 138px;
+        width: max(0px, time-label.x - self.x - (root.chat.outgoing ? 24px : 5px));
         height: 20px;
         text: root.chat.title;
         color: root.selected ? Theme.selected-ink : Theme.ink;
@@ -209,7 +212,7 @@ component ChatTile inherits Rectangle {
         height: 20px;
         text: root.chat.time;
         color: root.selected ? Theme.selected-muted : Theme.muted;
-        font-size: 12px;
+        font-size: 13px;
         horizontal-alignment: right;
         vertical-alignment: center;
     }
@@ -227,8 +230,8 @@ component ChatTile inherits Rectangle {
     if root.chat.unread > 0 : Rectangle {
         x: parent.width - self.width - 10px;
         y: 34px;
-        width: max(20px, unread-text.preferred-width + 12px);
-        height: 20px;
+        width: max(19px, unread-text.preferred-width + 10px);
+        height: 19px;
         Rectangle {
             x: 0px;
             y: 0px;
@@ -286,6 +289,7 @@ component Bubble inherits Rectangle {
     property <length> receipt-width: outgoing ? 20px : 0px;
     property <length> date-width: date-measure.preferred-width + receipt-width;
     property <string> display-text: root.message.is-photo && root.message.body == "Фото" ? "" : root.message.body;
+    property <styled-text> display-content: root.display-text == "" ? @markdown("") : root.message.has-formatting ? root.message.formatted-body : @markdown("\{root.display-text}");
     out property <length> quote-height: root.message.reply-to > 0 ? 44px : 0px;
     property <length> photo-height: root.message.is-photo ? clamp((root.body-width - 16px) * max(1, root.message.photo-height) / max(1, root.message.photo-width), 100px, 300px) : 0px;
     property <bool> single-line: !root.message.is-photo && measure.preferred-height <= date-measure.preferred-height + 4px && measure.preferred-width + date-width + 34px <= available-width;
@@ -305,11 +309,11 @@ component Bubble inherits Rectangle {
         tail-width: root.tail-width;
         tail: root.group-end && Theme.design == 0 ? (root.outgoing ? 2 : 1) : 0;
     }
-    measure := Text {
+    measure := StyledText {
         visible: false;
-        text: root.display-text;
-        font-size: 13px;
-        font-weight: 400;
+        text: root.display-content;
+        default-font-size: 13px;
+        default-font-family: "Open Sans";
     }
     quote-measure := Text { visible: false; text: root.message.reply-author + "\n" + root.message.reply-body; font-size: 12px; }
     Rectangle { x: 0px; y: 0px; width: parent.width; height: parent.height; border-radius: 8px; background: Theme.accent.transparentize(0.75); opacity: focus-motion.value; }
@@ -331,16 +335,17 @@ component Bubble inherits Rectangle {
         text: root.message.time;
         font-size: 13px;
     }
-    body := Text {
+    body := StyledText {
         x: root.left-pad + 11px;
         y: 8px + root.quote-height + root.photo-height;
         width: max(1px, root.body-width - 22px - (root.single-line ? root.date-width + 12px : 0px));
         height: self.preferred-height;
-        text: root.display-text;
-        font-size: 13px;
-        font-weight: 400;
-        color: Theme.ink;
-        wrap: word-wrap;
+        text: root.display-content;
+        default-font-size: 13px;
+        default-font-family: "Open Sans";
+        default-color: Theme.ink;
+        link-color: root.outgoing ? Theme.outgoing-check : Theme.accent;
+        link-clicked(url) => { Theme.open-link(url); }
     }
     Text {
         x: root.left-pad + root.body-width - root.date-width - 9px;
@@ -382,7 +387,9 @@ component Bubble inherits Rectangle {
     }
     TouchArea {
         width: parent.width; height: parent.height;
-        enabled: !root.flight-running;
+        // Native styled text handles links; the window filter routes right
+        // clicks back to the message's context menu before Slint dispatches.
+        enabled: !root.flight-running && (!root.message.has-formatting || Theme.context-pointer || root.message.failed);
         mouse-cursor: root.message.is-photo || root.message.failed ? MouseCursor.pointer : MouseCursor.default;
         pointer-event(event) => {
             if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
@@ -392,6 +399,17 @@ component Bubble inherits Rectangle {
         clicked => {
             if root.message.failed { root.retry-requested(); }
             else if root.message.is-photo { root.photo-requested(); }
+        }
+    }
+    if root.message.is-photo : TouchArea {
+        x: root.left-pad + 8px; y: 8px + root.quote-height;
+        width: root.body-width - 16px; height: root.photo-height;
+        enabled: !root.flight-running; mouse-cursor: pointer;
+        clicked => { if root.message.failed { root.retry-requested(); } else { root.photo-requested(); } }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                root.selected(self.x + self.mouse-x, self.y + self.mouse-y);
+            }
         }
     }
     if root.message.reply-to > 0 : TouchArea {
@@ -498,6 +516,7 @@ export component Desktop inherits Window {
     private property <int> jump-target;
     private property <int> jump-generation;
     property <length> composer-extra: root.reply-message > 0 || root.edit-message-id > 0 ? 50px : 0px;
+    out property <length> composer-height: root.chat-can-write ? composer.content-height : 46px;
     callback select-folder(int);
     callback view-photo(int);
     callback step-photo(int);
@@ -890,9 +909,9 @@ export component Desktop inherits Window {
 
             Rectangle {
                 x: 0px;
-                y: parent.height - 46px;
+                y: parent.height - root.composer-height;
                 width: history.width;
-                height: 46px;
+                height: root.composer-height;
                 visible: root.has-chat;
                 background: Theme.surface;
                 Rectangle {
@@ -911,17 +930,16 @@ export component Desktop inherits Window {
                     enabled: root.connected && !root.message-busy && root.edit-message-id == 0;
                     clicked => { root.file-open = true; }
                 }
-                composer := Entry {
+                composer := Composer {
                     x: 46px;
-                    y: 3px;
+                    y: 0px;
                     width: parent.width - 134px;
-                    height: 40px;
+                    height: parent.height;
                     text <=> root.draft;
                     placeholder-visible: !root.follow-sending;
                     visible: root.chat-can-write;
                     read-only: root.message-busy && !root.text-send-pending;
                     placeholder: root.edit-message-id > 0 ? "Edit message..." : root.reply-message > 0 ? "Reply..." : root.active-chat.channel-access == 2 ? "Опубликовать запись…" : "Write a message...";
-                    plain: Theme.design == 0;
                     accepted => { root.send-message(); }
                 }
                 IconButton {
@@ -972,9 +990,9 @@ export component Desktop inherits Window {
                     x: 0px;
                     y: 0px;
                     width: parent.width;
-                    property <length> view-height: parent.height - 46px - root.composer-extra;
+                    property <length> view-height: parent.height - root.composer-height - root.composer-extra;
                     property <length> content-height: max(view-height, history-items.preferred-height);
-                    property <length> flight-padding: root.follow-sending ? 46px : 0px;
+                    property <length> flight-padding: root.follow-sending ? root.composer-height : 0px;
                     height: view-height + flight-padding;
                     interactive: !root.follow-sending;
                     visible: root.has-chat;
@@ -1122,7 +1140,7 @@ export component Desktop inherits Window {
                 border-radius: 2px;
             }
             if root.composer-extra > 0px : Rectangle {
-                x: 0px; y: parent.height - 46px - root.composer-extra; width: history.width; height: root.composer-extra;
+                x: 0px; y: parent.height - root.composer-height - root.composer-extra; width: history.width; height: root.composer-extra;
                 background: Theme.surface;
                 Rectangle { x: 48px; y: 5px; width: 3px; height: 40px; background: Theme.accent; }
                 Text { x: 61px; y: 5px; width: parent.width - 110px; height: 18px; text: root.edit-message-id > 0 ? "Редактирование" : "Ответ: " + root.reply-author; color: Theme.accent; font-size: 13px; font-weight: 600; overflow: elide; }

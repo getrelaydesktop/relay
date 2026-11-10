@@ -4177,6 +4177,7 @@ dependencies = [
  "grammers-mtsender",
  "grammers-session",
  "grammers-tl-types",
+ "i-slint-common",
  "i-slint-renderer-skia",
  "image",
  "qrcode",

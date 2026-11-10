@@ -11,6 +11,7 @@ mod preferences;
 mod presence;
 mod qr;
 mod render_assets;
+mod rich_text;
 mod sending;
 mod telegram;
 #[cfg(windows)]
@@ -1020,6 +1021,8 @@ fn live_message(m: &telegram::TgMessage) -> MessageRow {
         has_media: m.has_media,
         is_photo: m.is_photo,
         body: m.body.clone().into(),
+        has_formatting: !m.entities.is_empty(),
+        formatted_body: rich_text::format(&m.body, &m.entities, m.entity_offset),
         time: m.time.clone().into(),
         outgoing: m.outgoing,
         channel_post: m.channel_post,
@@ -1033,6 +1036,19 @@ fn chat_preview(text: &str) -> slint::SharedString {
 }
 
 fn install_rendering(ui: &Desktop) {
+    ui.global::<Theme>()
+        .on_open_link(|url| rich_text::open_link(url.as_str()));
+    let weak = ui.as_weak();
+    ui.window().on_winit_window_event(move |_, event| {
+        use slint::winit_030::winit::event::{MouseButton, WindowEvent};
+        if let WindowEvent::MouseInput { button, .. } = event {
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<Theme>()
+                    .set_context_pointer(*button == MouseButton::Right);
+            }
+        }
+        slint::EventResult::Reject
+    });
     ui.global::<TelegramMotion>()
         .on_send_rise(sending::rise_progress);
     let played_sends = Rc::new(RefCell::new(std::collections::HashSet::new()));
