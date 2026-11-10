@@ -203,7 +203,7 @@ impl Demo {
         self.detail_requests.clear();
         self.viewed_photo = None;
         ui.set_photo_open(false);
-        ui.set_view_photo(Default::default());
+        ui.set_photo_image(Default::default());
         ui.set_profile_open(false);
         ui.set_profile_key(Default::default());
         ui.set_profile_photo(Default::default());
