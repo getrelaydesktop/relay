@@ -451,6 +451,9 @@ export component Desktop inherits Window {
     in-out property <string> profile-link;
     in-out property <string> profile-qr-matrix;
     in-out property <length> profile-scroll-y <=> profile-panel.scroll-y;
+    out property <length> profile-header-y: profile-panel.header-y;
+    out property <int> profile-gift-columns: profile-panel.gift-columns;
+    out property <length> profile-gift-width: profile-panel.gift-width;
     out property <length> profile-header-height: profile-panel.header-height;
     in-out property <bool> photo-from-profile;
     callback profile-action(string);
@@ -635,6 +638,8 @@ export component Desktop inherits Window {
     callback maximize-window();
     callback close-window();
     callback drag-window();
+    callback suspend-ui();
+    callback resume-ui();
     callback resize-window();
 
     property <bool> compact: root.width < 740px;

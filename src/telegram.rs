@@ -107,6 +107,7 @@ pub enum TgEvent {
         key: String,
         gift_key: String,
         pixels: image::RgbaImage,
+        pattern: bool,
     },
     GiftsFailed {
         key: String,

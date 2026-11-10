@@ -20,6 +20,13 @@ Sources below are relative to `Telegram/SourceFiles/` at that exact commit.
 | Actions | `info_profile_top_bar_action_button.cpp`, `info_profile_top_bar.style` | 52px tall; 18px side padding, 10px gap, 16px bottom padding; 23px icons at y=6, 11px labels at y=30; two-stage collapse |
 | Information | `info_profile_actions.cpp`, `info_profile_actions.style` | phone, bio, username, birthday; 23/9/20/7 padding; value above muted label |
 | Gift tab | `infoProfileTabsStrip` in `info/info.style` | 48px strip, 36px outer pill, 4px active inset, semibold label |
+| Gift grid | `info_peer_gifts_widget.cpp`, `ui/effects/credits.style` | 11px sides, 24px top/bottom, 10×8px gaps, 107px minimum width, 108px height; integer rounding and single-card width cap 214px |
+| Gift card | `info_peer_gifts_common.cpp` (`Minimal`) | centered 80px sticker, 12px corners, no title or Stars price under the sticker, 10px semibold diagonal rarity ribbon |
+| Collectible backdrop | `GiftButton::paintUniqueBackgroundGradient/Pattern`, `ui/top_background_gradient.cpp` | server-provided radial colors and pattern thumbnail; exact 18 `PatternBgPointsSmall` coordinates, scales and opacities |
+
+`ui/gifts.slint` instantiates decorated cards only for visible rows plus one
+preload row, while preserving total scroll geometry. Static preview downloads
+remain bounded and arrive independently from the card metadata.
 
 The centered flexible header is the current upstream profile. The 108px-high,
 left-aligned `infoProfileCover` still present in upstream styles is not the
@@ -45,11 +52,13 @@ reference for this screen.
 
 This is **not yet full 1:1 profile parity**. In particular:
 
-- Gift card geometry is still a Relay layout, not the upstream `GiftButton`
-  minimal renderer. Pagination is 12 per request with a load-more button, not
-  upstream's 50 plus virtualized auto-preload.
-- Gift previews are static. No TGS/WebM animation, collectible backdrop/pattern,
-  gift collections, transfers/upgrades, pinning or reordering.
+- Gift pagination remains 12 per request with a load-more button, rather than
+  upstream's 50 and automatic pagination. The static minimal-card geometry is
+  ported, but this is not yet a pixel-diff-verified upstream rendering.
+- Gift previews and patterns are static; unavailable thumbnails show a fallback.
+  Slint renders the shadow and text instead of Qt's cached/blurred images, so
+  antialiasing and shadows can differ. No TGS/WebM animation, gift collections,
+  transfers/upgrades, sender portraits, pin/TON icons or reordering.
 - No shared media/member/story tabs, premium/verification/emoji-status badges,
   profile color themes, business details, ratings or music pills.
 - Calls are not implemented; their profile button is disabled rather than fake.
@@ -62,8 +71,9 @@ This is **not yet full 1:1 profile parity**. In particular:
 
 `src/visual_tests.rs::verify_profiles` renders the actual `Desktop` component,
 not a stand-alone mock. It checks header expansion/collapse and the photo's
-centered position at 100%, 150%, 200% and 400px window width, and saves dark,
-light, collapsed, self-profile and gifts-hidden PNGs. These checks protect the
+centered position at 100%, 150%, 200%, narrow, short and maximized window sizes;
+checks top anchoring throughout collapse, caption drag routing and the close
+button; and saves dark, light, collapsed, self-profile and gifts-hidden PNGs. These checks protect the
 ported geometry; they are not an upstream screenshot-diff proof of 1:1 parity.
 Live Telegram permissions, native dialogs, and DWM/GPU frame pacing require
 interactive verification separately.

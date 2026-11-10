@@ -21,6 +21,7 @@ mod telegram;
 mod tray;
 #[cfg(test)]
 mod visual_tests;
+mod window_chrome;
 
 const AVATAR_PALETTES: [((u8, u8, u8), (u8, u8, u8)); 7] = [
     ((255, 136, 94), (228, 82, 70)),
@@ -55,6 +56,7 @@ struct Demo {
     next_local_id: i32,
     pending_send: Option<sending::PendingSend>,
     network_poll: Timer,
+    tray_scroll_y: f32,
     bridge: telegram::TelegramBridge,
 }
 
@@ -102,6 +104,7 @@ impl Demo {
             next_local_id: -1,
             pending_send: None,
             network_poll: Timer::default(),
+            tray_scroll_y: 0.0,
             bridge,
         }
     }
@@ -173,7 +176,62 @@ impl Demo {
         })
     }
 
+    fn suspend_ui(&mut self, ui: &Desktop) {
+        if !ui.get_window_visible() {
+            return;
+        }
+        self.tray_scroll_y = ui.get_history_scroll_y();
+        ui.set_window_visible(false);
+        // Detach the large delegate trees, but keep account/message/draft state.
+        ui.set_messages(Default::default());
+        ui.set_chats(Default::default());
+        ui.set_folders(Default::default());
+        self.chat_model.set_vec(vec![]);
+        self.folder_model.set_vec(vec![]);
+        for chat in &self.chats {
+            for i in 0..chat.messages.row_count() {
+                let mut row = chat.messages.row_data(i).unwrap();
+                if row.has_preview {
+                    row.preview = Default::default();
+                    row.has_preview = false;
+                    chat.messages.set_row_data(i, row);
+                }
+            }
+        }
+        self.preview_lru.clear();
+        self.preview_bytes = 0;
+        self.detail_requests.clear();
+        self.viewed_photo = None;
+        ui.set_photo_open(false);
+        ui.set_view_photo(Default::default());
+        ui.set_profile_open(false);
+        ui.set_profile_key(Default::default());
+        ui.set_profile_photo(Default::default());
+        ui.set_profile_has_photo(false);
+        ui.set_profile_gifts(Default::default());
+        ui.set_file_preview(Default::default());
+        ui.set_has_file_preview(false);
+    }
+
+    fn resume_ui(&self, ui: &Desktop) {
+        ui.set_window_visible(true);
+        self.refresh_chats(ui);
+        self.refresh_history(ui);
+        let y = self.tray_scroll_y;
+        let weak = ui.as_weak();
+        Timer::single_shot(Duration::ZERO, move || {
+            if let Some(ui) = weak.upgrade() {
+                if ui.get_window_visible() {
+                    ui.set_history_scroll_y(y);
+                }
+            }
+        });
+    }
+
     fn refresh_chats(&self, ui: &Desktop) {
+        if !ui.get_window_visible() {
+            return;
+        }
         let mut rows: Vec<_> = self
             .matching(&ui.get_query())
             .map(|chat| chat.row.clone())
@@ -226,6 +284,9 @@ impl Demo {
     }
 
     fn refresh_history(&self, ui: &Desktop) {
+        if !ui.get_window_visible() {
+            return;
+        }
         if self.chats.is_empty() {
             ui.set_messages(ModelRc::new(VecModel::<MessageRow>::default()));
             ui.set_active_chat(ChatRow::default());
@@ -487,6 +548,15 @@ impl Demo {
                             url: g.url.into(),
                             has_photo: g.photo.is_some(),
                             photo: g.photo.as_ref().map(slint_image).unwrap_or_default(),
+                            collectible: g.collectible,
+                            center: slint::Color::from_argb_encoded(0xff000000 | g.center as u32),
+                            edge: slint::Color::from_argb_encoded(0xff000000 | g.edge as u32),
+                            pattern_color: slint::Color::from_argb_encoded(
+                                0xff000000 | g.pattern_color as u32,
+                            ),
+                            badge: g.badge.into(),
+                            pinned: g.pinned,
+                            ..Default::default()
                         }));
                         let empty = rows.is_empty();
                         ui.set_profile_gifts(ModelRc::new(VecModel::from(rows)));
@@ -503,14 +573,20 @@ impl Demo {
                     key,
                     gift_key,
                     pixels,
+                    pattern,
                 } => {
                     if ui.get_profile_key() == key && ui.global::<Theme>().get_show_gifts() {
                         let model = ui.get_profile_gifts();
                         let image = slint_image(&pixels);
                         for (i, mut row) in model.iter().enumerate() {
                             if row.key == gift_key {
-                                row.photo = image.clone();
-                                row.has_photo = true;
+                                if pattern {
+                                    row.pattern = image.clone();
+                                    row.has_pattern = true;
+                                } else {
+                                    row.photo = image.clone();
+                                    row.has_photo = true;
+                                }
                                 model.set_row_data(i, row);
                             }
                         }
@@ -584,6 +660,9 @@ impl Demo {
                     pixels,
                 } => {
                     self.detail_requests.remove(&(peer_id, message_id));
+                    if !ui.get_window_visible() {
+                        continue;
+                    }
                     if let Some(chat) = self.chats.iter().find(|chat| chat.row.id == peer_id) {
                         if let Some(index) =
                             chat.messages.iter().position(|row| row.id == message_id)
@@ -1350,6 +1429,12 @@ fn remove_ripple(waves: ModelRc<i32>, generation: i32) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // Pinned Slint 1.16.1 supports destroying the native window/Skia surface
+    // on hide and restoring its placement on show. Set before spawning threads.
+    #[cfg(windows)]
+    unsafe {
+        std::env::set_var("SLINT_DESTROY_WINDOW_ON_HIDE", "1");
+    }
     let renderer = slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name("skia".into());
@@ -1370,7 +1455,7 @@ fn main() -> Result<(), slint::PlatformError> {
         match tray::Tray::new(
             move || {
                 let _ = restore.clone().upgrade_in_event_loop(|ui| {
-                    ui.set_window_visible(true);
+                    ui.invoke_resume_ui();
                     ui.window().set_minimized(false);
                     let _ = ui.show();
                     ui.window()
@@ -1410,7 +1495,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_close_window(move || {
         if has_tray {
             if let Some(ui) = weak.upgrade() {
-                ui.set_window_visible(false);
+                ui.invoke_suspend_ui();
                 let _ = ui.hide();
             }
         } else if let Err(error) = slint::quit_event_loop() {
@@ -1421,7 +1506,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.window().on_close_requested(move || {
         if has_tray {
             if let Some(ui) = weak.upgrade() {
-                ui.set_window_visible(false);
+                ui.invoke_suspend_ui();
             }
         }
         slint::CloseRequestResponse::HideWindow
@@ -1430,10 +1515,29 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_drag_window(move || {
         if let Some(ui) = weak.upgrade() {
             ui.window().with_winit_window(|window| {
-                if let Err(error) = window.drag_window() {
+                #[cfg(windows)]
+                let result = window_chrome::begin_move(window);
+                #[cfg(not(windows))]
+                let result = window.drag_window();
+                if let Err(error) = result {
                     eprintln!("Could not move the window: {error}");
                 }
             });
+            // Windows consumes the matching release in its native move loop.
+            // Clear Slint's caption grab on the next event-loop turn.
+            #[cfg(windows)]
+            {
+                let weak = ui.as_weak();
+                Timer::single_shot(Duration::ZERO, move || {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.window()
+                            .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                                position: slint::LogicalPosition::new(1.0, 1.0),
+                                button: slint::platform::PointerEventButton::Left,
+                            });
+                    }
+                });
+            }
         }
     });
     let weak = ui.as_weak();
@@ -1471,6 +1575,18 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     let demo = Rc::new(RefCell::new(Demo::new()));
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_suspend_ui(move || {
+        if let Some(ui) = weak.upgrade() {
+            state.borrow_mut().suspend_ui(&ui);
+        }
+    });
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_resume_ui(move || {
+        if let Some(ui) = weak.upgrade() {
+            state.borrow().resume_ui(&ui);
+        }
+    });
     let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
     ui.global::<Theme>().on_open_profile(move |key| {
         let Some(ui) = weak.upgrade() else { return };

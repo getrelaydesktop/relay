@@ -1,0 +1,113 @@
+// Telegram Desktop v7.4.1, 157f5cfc85e2dd1fa67f129a5e31a81db5ddeb19.
+// GPL-3.0: info_peer_gifts_common.cpp (Minimal), info_peer_gifts_widget.cpp,
+// ui/effects/credits.style and ui/top_background_gradient.cpp.
+import { Theme } from "theme.slint";
+export struct GiftRow {
+    key: string, title: string, detail: string, url: string,
+    photo: image, has-photo: bool, collectible: bool,
+    center: color, edge: color, pattern-color: color,
+    pattern: image, has-pattern: bool, badge: string, pinned: bool,
+}
+export global TelegramGifts {
+    out property <length> minimum-card-width: 107px; // (boxWideWidth 364 - 22 - 20) / 3
+    out property <length> card-height: 108px;
+    out property <length> sticker-size: 80px;
+    out property <length> horizontal-padding: 11px;
+    out property <length> vertical-padding: 24px;
+    out property <length> column-gap: 10px;
+    out property <length> row-gap: 8px;
+    out property <length> radius: 12px;
+}
+component GiftBadge inherits Rectangle {
+    in property <string> text;
+    in property <color> fill;
+    in property <color> tint;
+    in property <color> ink;
+    width: label.preferred-width + 28px; height: self.width;
+    // ValidateRotatedBadge: 45 degrees, 10px semibold, top-right edge.
+    Rectangle {
+        x: parent.width - ceil(label.preferred-width / 1.41421356px) * 1px; y: 0px;
+        width: 1px; height: 1px; transform-rotation: 45deg;
+        transform-origin: { x: 0px, y: 0px };
+        Rectangle { x: -5 * label.preferred-width; y: 0px; width: 12 * label.preferred-width; height: 14px; background: root.fill;
+            Rectangle { x: 0px; y: 0px; width: parent.width; height: parent.height; background: root.tint; opacity: 0.5; }
+        }
+        label := Text { x: 0px; y: 0px; text: root.text; color: root.ink; font-size: 10px; font-weight: 600; height: 14px; }
+    }
+}
+component GiftCard inherits Rectangle {
+    in property <GiftRow> gift;
+    callback selected();
+    height: TelegramGifts.card-height;
+    border-radius: TelegramGifts.radius;
+    background: Theme.surface;
+    drop-shadow-offset-y: 1px; drop-shadow-blur: 4px; drop-shadow-color: #0000004d;
+    accessible-role: button; accessible-label: root.gift.title + ", " + root.gift.detail;
+    accessible-action-default => { root.selected(); }
+    Rectangle {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        border-radius: TelegramGifts.radius; clip: true;
+        if root.gift.collectible : Rectangle {
+            // Square gradient: edge at width/2, as in QRadialGradient.
+            x: 0px; y: (parent.height - self.height) / 2; width: parent.width; height: self.width;
+            background: @radial-gradient(circle, root.gift.center, root.gift.edge 70.710678%);
+        }
+        if root.gift.has-pattern : Rectangle {
+            x: 0px; y: 0px; width: parent.width; height: parent.height;
+            // Exact PatternBgPointsSmall positions/scales/opacities. The
+            // profile renderer extends its pattern rectangle by width/3.
+            for point in [
+                {x: 0.5, y: 0.066, scale: 0.45, alpha: 0.2},
+                {x: 0.177, y: 0.168, scale: 0.45, alpha: 0.2}, {x: 0.822, y: 0.168, scale: 0.45, alpha: 0.2},
+                {x: 0.37, y: 0.168, scale: 0.55, alpha: 0.3}, {x: 0.63, y: 0.168, scale: 0.55, alpha: 0.3},
+                {x: 0.277, y: 0.308, scale: 0.45, alpha: 0.3}, {x: 0.723, y: 0.308, scale: 0.45, alpha: 0.3},
+                {x: 0.13, y: 0.42, scale: 0.45, alpha: 0.2}, {x: 0.87, y: 0.42, scale: 0.45, alpha: 0.2},
+                {x: 0.27, y: 0.533, scale: 0.55, alpha: 0.3}, {x: 0.73, y: 0.533, scale: 0.55, alpha: 0.3},
+                {x: 0.2, y: 0.73, scale: 0.45, alpha: 0.2}, {x: 0.8, y: 0.73, scale: 0.45, alpha: 0.2},
+                {x: 0.302, y: 0.825, scale: 0.55, alpha: 0.3}, {x: 0.698, y: 0.825, scale: 0.55, alpha: 0.3},
+                {x: 0.5, y: 0.876, scale: 0.55, alpha: 0.2},
+                {x: 0.144, y: 0.936, scale: 0.45, alpha: 0.2}, {x: 0.856, y: 0.936, scale: 0.45, alpha: 0.2},
+            ] : Image {
+                x: floor((-parent.width / 3 + point.x * parent.width * 5 / 3) / 1px) * 1px - self.width / 2;
+                y: floor(point.y * parent.height / 1px) * 1px - self.height / 2;
+                width: 40px * point.scale; height: self.width;
+                source: root.gift.pattern; colorize: root.gift.pattern-color; opacity: point.alpha; image-fit: contain;
+            }
+        }
+        Image {
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: TelegramGifts.sticker-size; height: self.width;
+            source: root.gift.has-photo ? root.gift.photo : @image-url("icons/profile-gift.svg");
+            colorize: root.gift.has-photo ? #00000000 : Theme.muted; image-fit: contain;
+        }
+        if root.gift.badge != "" : GiftBadge {
+            x: parent.width + 1px - self.width; y: -1px;
+            text: root.gift.badge;
+            fill: root.gift.collectible ? root.gift.edge : Theme.accent;
+            tint: root.gift.collectible ? root.gift.pattern-color : transparent;
+            ink: root.gift.collectible ? white : Theme.surface;
+        }
+    }
+    TouchArea { x: 0px; y: 0px; width: parent.width; height: parent.height; mouse-cursor: pointer; clicked => { root.selected(); } }
+}
+export component GiftGrid inherits Rectangle {
+    in property <[GiftRow]> gifts;
+    in property <length> visible-top: 0px;
+    in property <length> visible-bottom: self.height;
+    callback selected(GiftRow);
+    out property <int> columns: max(1, min(max(1, root.gifts.length), floor((root.width - 2 * TelegramGifts.horizontal-padding + TelegramGifts.column-gap) / (TelegramGifts.minimum-card-width + TelegramGifts.column-gap))));
+    out property <length> card-width: min(2 * TelegramGifts.minimum-card-width, floor((root.width - 2 * TelegramGifts.horizontal-padding + TelegramGifts.column-gap) / root.columns / 1px) * 1px - TelegramGifts.column-gap);
+    private property <length> row-height: TelegramGifts.card-height + TelegramGifts.row-gap;
+    private property <length> left: (root.width - root.columns * (root.card-width + TelegramGifts.column-gap) + TelegramGifts.column-gap) / 2;
+    height: root.gifts.length == 0 ? 0px : 2 * TelegramGifts.vertical-padding + ceil(root.gifts.length / root.columns) * root.row-height - TelegramGifts.row-gap;
+    background: Theme.hover;
+    // Keep grid geometry stable, instantiate only visible rows plus one preload row.
+    for gift[index] in root.gifts : Rectangle {
+        x: root.left + mod(index, root.columns) * (root.card-width + TelegramGifts.column-gap);
+        y: TelegramGifts.vertical-padding + floor(index / root.columns) * root.row-height;
+        width: root.card-width; height: TelegramGifts.card-height;
+        if self.y + self.height >= root.visible-top - root.row-height && self.y <= root.visible-bottom + root.row-height : GiftCard {
+            x: 0px; y: 0px; width: parent.width; gift: gift; selected => { root.selected(gift); }
+        }
+    }
+}

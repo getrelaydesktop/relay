@@ -326,12 +326,13 @@ fn portable_interface_renders_icons_at_multiple_scales() {
         }
     }
     verify_telegram_motion(&window, &ui);
+    verify_profiles(&window, &ui);
+    verify_tray_resource_release(&window, &ui);
     verify_sending(&window, &ui);
     verify_incoming(&window, &ui);
     verify_context_menu(&window, &ui);
     verify_photos_and_replies(&window, &ui);
     verify_rich_text_and_composer(&window, &ui);
-    verify_profiles(&window, &ui);
     verify_maximized_history_work(&window, &ui);
     verify_network_burst_yields(&window, &ui);
     ui.hide().unwrap();
@@ -1177,7 +1178,8 @@ fn verify_sending(window: &PreviewWindow, ui: &Desktop) {
     assert!(state.chats[0].messages.row_data(before).unwrap().pending);
     assert!(matches!(
         commands.try_recv().unwrap(),
-        telegram::TgCommand::SendMessage(0, _, Some(42))
+        telegram::TgCommand::SendFormatted(0, text, Some(42), entities)
+            if text == "Текст плавно перелетает из поля ввода в сообщение" && entities.is_empty()
     ));
     window.advance(0);
     let start = window.take_snapshot().unwrap();
@@ -1269,7 +1271,8 @@ fn verify_sending(window: &PreviewWindow, ui: &Desktop) {
     assert_eq!(state.chats[0].messages.row_count(), before + 2);
     assert!(matches!(
         commands.try_recv().unwrap(),
-        telegram::TgCommand::SendMessage(0, _, Some(53))
+        telegram::TgCommand::SendFormatted(0, text, Some(53), entities)
+            if text == "Следующее сообщение" && entities.is_empty()
     ));
     assert!(
         state.chats[0]
@@ -1659,24 +1662,35 @@ fn verify_profiles(window: &PreviewWindow, ui: &Desktop) {
                 detail: "100 Stars".into(),
                 photo: photo.clone(),
                 has_photo: i % 2 == 0,
+                collectible: i % 3 == 1,
+                center: Color::from_rgb(151, 194, 158),
+                edge: Color::from_rgb(61, 122, 88),
+                pattern_color: Color::from_rgb(30, 76, 49),
+                badge: if i % 3 == 1 {
+                    "1 из 5K".into()
+                } else {
+                    Default::default()
+                },
                 ..Default::default()
             })
             .collect::<Vec<_>>(),
     )));
     ui.global::<Theme>().set_show_gifts(true);
     ui.set_profile_open(true);
-    for (name, scale, dark, width) in [
-        ("profile-dark-100", 1.0, true, 1100),
-        ("profile-light-150", 1.5, false, 1100),
-        ("profile-dark-200", 2.0, true, 1100),
-        ("profile-narrow", 1.0, true, 400),
+    for (name, scale, dark, width, height) in [
+        ("profile-dark-100", 1.0, true, 1100, 720),
+        ("profile-light-150", 1.5, false, 1100, 720),
+        ("profile-dark-200", 2.0, true, 1100, 720),
+        ("profile-maximized", 1.0, true, 1920, 1040),
+        ("profile-short", 1.0, true, 1100, 480),
+        ("profile-narrow", 1.0, true, 400, 720),
     ] {
         window.dispatch_event(WindowEvent::ScaleFactorChanged {
             scale_factor: scale,
         });
         window.window.set_size(PhysicalSize::new(
             (width as f32 * scale) as u32,
-            (720.0 * scale) as u32,
+            (height as f32 * scale) as u32,
         ));
         ui.global::<Theme>().set_dark(dark);
         ui.set_profile_scroll_y(0.0);
@@ -1684,10 +1698,50 @@ fn verify_profiles(window: &PreviewWindow, ui: &Desktop) {
         window.advance(250);
         window.take_snapshot().unwrap();
         assert_eq!(
+            ui.get_profile_header_y(),
+            0.0,
+            "{name}: header must be pinned to the panel's top, not centered"
+        );
+        assert_eq!(
             ui.get_profile_header_height(),
             236.0,
             "upstream expanded header"
         );
+        let panel_width = 392.0_f32.min((width as f32 - 96.0).max(324.0));
+        let columns = ((panel_width - 22.0 + 10.0) / 117.0).floor() as i32;
+        assert_eq!(
+            ui.get_profile_gift_columns(),
+            columns,
+            "Telegram gift column count"
+        );
+        assert_eq!(
+            ui.get_profile_gift_width(),
+            ((panel_width - 12.0) / columns as f32).floor() - 10.0,
+            "Telegram gift width rounding"
+        );
+        // Caption dragging must work even with a modal profile above the chat.
+        let drag_count = Rc::new(Cell::new(0));
+        let calls = drag_count.clone();
+        ui.on_drag_window(move || calls.set(calls.get() + 1));
+        let caption = LogicalPosition::new(120.0, 13.0);
+        window.dispatch_event(WindowEvent::PointerPressed {
+            position: caption,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        window.dispatch_event(WindowEvent::PointerReleased {
+            position: caption,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        assert_eq!(
+            drag_count.get(),
+            1,
+            "profile must not consume the native caption drag"
+        );
+        assert!(
+            ui.get_profile_open(),
+            "caption dragging must not dismiss the profile"
+        );
+        ui.on_drag_window(|| {});
         let pixels = window.take_snapshot().unwrap();
         save_animation_frame(name, &pixels);
         let center = ((width as f32 / 2.0) * scale) as usize;
@@ -1697,17 +1751,46 @@ fn verify_profiles(window: &PreviewWindow, ui: &Desktop) {
             p.r > 180 && p.g < 130,
             "profile photo must render in upstream centered position"
         );
-        ui.set_profile_scroll_y(-180.0);
-        window.take_snapshot().unwrap();
-        window.advance(1);
-        assert_eq!(
-            ui.get_profile_header_height(),
-            56.0,
-            "upstream collapsed header"
-        );
+        for offset in [60.0, 112.0, 150.0, 180.0] {
+            ui.set_profile_scroll_y(-offset);
+            window.take_snapshot().unwrap();
+            window.advance(1);
+            assert_eq!(
+                ui.get_profile_header_y(),
+                0.0,
+                "{name}: collapse must not move the header down"
+            );
+            assert_eq!(
+                ui.get_profile_header_height(),
+                (236.0_f32 - offset).max(56.0)
+            );
+        }
         save_animation_frame(
             &format!("{name}-collapsed"),
             &window.take_snapshot().unwrap(),
+        );
+        // The close button must remain clickable at the top after collapse.
+        let panel_width = 392.0_f32.min((width as f32 - 96.0).max(324.0));
+        let position = LogicalPosition::new((width as f32 + panel_width) / 2.0 - 28.0, 65.0);
+        window.dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        window.dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        assert!(
+            !ui.get_profile_open(),
+            "{name}: top-right close button must dismiss the collapsed profile"
+        );
+        ui.set_profile_open(true);
+        window.take_snapshot().unwrap();
+        window.advance(250);
+        assert_eq!(
+            ui.get_profile_header_height(),
+            236.0,
+            "reopening resets the header"
         );
     }
     ui.global::<Theme>().set_show_gifts(false);
@@ -1720,8 +1803,80 @@ fn verify_profiles(window: &PreviewWindow, ui: &Desktop) {
     ui.set_profile_open(false);
     ui.set_profile_has_photo(false);
     ui.set_profile_gifts(Default::default());
+    ui.set_profile_is_self(false);
     ui.global::<Theme>().set_show_gifts(true);
+    window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
+    window.window.set_size(PhysicalSize::new(1100, 720));
     window.advance(250);
+}
+
+fn verify_tray_resource_release(window: &PreviewWindow, ui: &Desktop) {
+    let (bridge, _commands, events) = telegram::TelegramBridge::offline_for_rendering();
+    let mut state = Demo::with_bridge(bridge);
+    ui.set_window_visible(true);
+    ui.set_draft("Черновик остаётся при сворачивании".into());
+    state.refresh_chats(ui);
+    state.refresh_history(ui);
+    let before = state.chats[0].messages.row_count();
+    let mut row = state.chats[0].messages.row_data(0).unwrap();
+    row.preview = slint_image(&image::RgbaImage::from_pixel(
+        64,
+        64,
+        image::Rgba([100, 120, 140, 255]),
+    ));
+    row.has_preview = true;
+    let mid = row.id;
+    state.chats[0].messages.set_row_data(0, row);
+    state.preview_bytes = 64 * 64 * 4;
+    state.suspend_ui(ui);
+    window.take_snapshot().unwrap();
+    assert_eq!(
+        ui.get_messages().row_count(),
+        0,
+        "tray must unload history delegates"
+    );
+    assert_eq!(
+        ui.get_chats().row_count(),
+        0,
+        "tray must unload chat delegates"
+    );
+    assert_eq!(state.preview_bytes, 0);
+    assert!(!state.chats[0].messages.row_data(0).unwrap().has_preview);
+    assert_eq!(
+        state.chats[0].messages.row_count(),
+        before,
+        "messages are application state, not disposable UI"
+    );
+    events
+        .send(telegram::TgEvent::Thumbnail {
+            peer_id: state.chats[0].row.id,
+            message_id: mid,
+            key: String::new(),
+            pixels: Some(image::RgbaImage::from_pixel(
+                64,
+                64,
+                image::Rgba([100, 120, 140, 255]),
+            )),
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    state.refresh_chats(ui);
+    state.refresh_history(ui);
+    assert_eq!(
+        ui.get_messages().row_count(),
+        0,
+        "background work must not rebuild hidden delegates"
+    );
+    assert_eq!(
+        state.preview_bytes, 0,
+        "late media must not refill the cache in tray"
+    );
+    state.resume_ui(ui);
+    window.take_snapshot().unwrap();
+    window.advance(1);
+    assert_eq!(ui.get_messages().row_count(), before);
+    assert_eq!(ui.get_draft(), "Черновик остаётся при сворачивании");
+    ui.set_draft(Default::default());
 }
 
 fn save_animation_frame(name: &str, pixels: &slint::SharedPixelBuffer<Rgba8Pixel>) {

@@ -22,13 +22,19 @@ pub struct Profile {
     pub birthday: String,
     pub notifications_muted: Option<bool>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Gift {
     pub key: String,
     pub title: String,
     pub detail: String,
     pub url: String,
     pub photo: Option<image::RgbaImage>,
+    pub collectible: bool,
+    pub center: i32,
+    pub edge: i32,
+    pub pattern_color: i32,
+    pub badge: String,
+    pub pinned: bool,
 }
 
 pub async fn load(
@@ -165,6 +171,20 @@ fn birthday_label(birthday: &tl::enums::Birthday) -> String {
     }
 }
 
+fn limited_badge(total: i32) -> String {
+    if total <= 0 {
+        return String::new();
+    }
+    if total < 10_000 && total % 1000 != 0 {
+        return format!("1 из {total}");
+    }
+    if total >= 1_000_000 {
+        format!("1 из {}M", total / 1_000_000)
+    } else {
+        format!("1 из {}K", total / 1000)
+    }
+}
+
 pub async fn load_gifts(
     client: &Client,
     peer: PeerRef,
@@ -197,35 +217,65 @@ pub async fn load_gifts(
         if saved.unsaved || saved.refunded {
             continue;
         }
-        let (gift_key, title, detail, url, doc) = match saved.gift {
+        let (mut gift, doc, pattern) = match saved.gift {
             tl::enums::StarGift::Gift(g) => (
-                format!("gift:{}", g.id),
-                g.title.unwrap_or_else(|| "Подарок Telegram".into()),
-                format!("{} Stars", g.stars),
-                String::new(),
+                Gift {
+                    key: format!(
+                        "gift:{}:{}:{}",
+                        g.id,
+                        saved.date,
+                        saved.saved_id.unwrap_or(saved.msg_id.unwrap_or(0) as i64)
+                    ),
+                    title: g.title.unwrap_or_else(|| "Подарок Telegram".into()),
+                    detail: format!("{} Stars", g.stars),
+                    badge: g
+                        .availability_total
+                        .filter(|n| *n > 0)
+                        .map(limited_badge)
+                        .unwrap_or_default(),
+                    ..Default::default()
+                },
                 Some(g.sticker),
+                None,
             ),
-            tl::enums::StarGift::Unique(g) => (
-                format!("unique:{}", g.id),
-                g.title,
-                format!("#{} · коллекционный", g.num),
-                format!("https://t.me/nft/{}", g.slug),
-                g.attributes.into_iter().find_map(|a| match a {
-                    tl::enums::StarGiftAttribute::Model(m) => Some(m.document),
-                    _ => None,
-                }),
-            ),
+            tl::enums::StarGift::Unique(g) => {
+                let mut gift = Gift {
+                    key: format!("unique:{}", g.id),
+                    title: g.title,
+                    detail: format!("#{} · коллекционный", g.num),
+                    url: format!("https://t.me/nft/{}", g.slug),
+                    collectible: true,
+                    badge: if saved.pinned_to_top {
+                        format!("#{}", g.num)
+                    } else {
+                        limited_badge(g.availability_total)
+                    },
+                    ..Default::default()
+                };
+                let (mut model, mut pattern) = (None, None);
+                for attribute in g.attributes {
+                    match attribute {
+                        tl::enums::StarGiftAttribute::Model(m) => model = Some(m.document),
+                        tl::enums::StarGiftAttribute::Pattern(p) => pattern = Some(p.document),
+                        tl::enums::StarGiftAttribute::Backdrop(b) => {
+                            gift.center = b.center_color;
+                            gift.edge = b.edge_color;
+                            gift.pattern_color = b.pattern_color;
+                        }
+                        _ => {}
+                    }
+                }
+                (gift, model, pattern)
+            }
         };
+        gift.pinned = saved.pinned_to_top;
         if let Some(doc) = doc {
-            previews.push((gift_key.clone(), doc));
+            previews.push((gift.key.clone(), doc, false));
         }
-        gifts.push(Gift {
-            key: gift_key,
-            title,
-            detail,
-            url,
-            photo: None,
-        });
+        if let Some(pattern) = pattern {
+            previews.push((gift.key.clone(), pattern, true));
+        }
+        gifts.push(gift);
     }
     // Show all card metadata now; slow thumbnails must not hide the whole page.
     let _ = tx.send(TgEvent::GiftsReady {
@@ -235,7 +285,7 @@ pub async fn load_gifts(
         append: !offset.is_empty(),
     });
     let mut tasks = tokio::task::JoinSet::new();
-    for (gift_key, doc) in previews {
+    for (gift_key, doc, pattern) in previews {
         let client = client.clone();
         let tx = tx.clone();
         let key = key.to_owned();
@@ -269,6 +319,7 @@ pub async fn load_gifts(
                     key,
                     gift_key,
                     pixels,
+                    pattern,
                 });
             }
         });

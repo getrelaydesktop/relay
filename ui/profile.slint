@@ -3,7 +3,8 @@
 // See docs/telegram-profiles.md for source mapping and parity boundaries.
 import { Theme, ActionButton, IconButton, AvatarFill, MenuItem } from "theme.slint";
 import { RippleSurface } from "motion.slint";
-export struct GiftRow { key: string, title: string, detail: string, url: string, photo: image, has-photo: bool }
+import { GiftGrid, GiftRow, TelegramGifts } from "gifts.slint";
+export { GiftRow, TelegramGifts } from "gifts.slint";
 export global TelegramProfile {
     out property <length> desired-width: 392px;
     out property <length> minimum-width: 324px;
@@ -98,6 +99,7 @@ export component ProfilePanel inherits Rectangle {
     in property <bool> more;
     in property <bool> busy;
     in-out property <length> scroll-y <=> scroll.viewport-y;
+    out property <length> header-y: header.y;
     out property <length> header-height: max(TelegramProfile.header-collapsed, TelegramProfile.header-expanded + min(0px, scroll.viewport-y));
     out property <float> header-progress: clamp((root.header-height - 124px) / 112px, 0, 1);
     private property <length> actions-height: TelegramProfile.action-height * clamp((root.header-height / 124px - 0.5) / 0.5, 0, 1);
@@ -107,8 +109,8 @@ export component ProfilePanel inherits Rectangle {
     private property <GiftRow> selected-gift;
     private property <string> toast;
     private property <bool> display-gifts: Theme.show-gifts && root.is-user;
-    private property <int> gift-columns: max(1, floor((root.width - 32px + 8px) / 112px));
-    private property <length> gift-width: (root.width - 32px - (root.gift-columns - 1) * 8px) / root.gift-columns;
+    out property <int> gift-columns: gift-grid.columns;
+    out property <length> gift-width: gift-grid.card-width;
     callback closed();
     callback view-photo();
     callback load-more();
@@ -157,18 +159,11 @@ export component ProfilePanel inherits Rectangle {
                     tab := Text { width: parent.width; height: parent.height; text: "Подарки"; color: Theme.accent; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
-            if root.display-gifts && root.gifts.length > 0 : Rectangle {
-                height: 16px + ceil(root.gifts.length / root.gift-columns) * (root.gift-width + 40px);
-                for gift[index] in root.gifts : Rectangle {
-                    x: 16px + mod(index, root.gift-columns) * (root.gift-width + 8px);
-                    y: 8px + floor(index / root.gift-columns) * (root.gift-width + 40px);
-                    width: root.gift-width; height: root.gift-width + 32px;
-                    border-radius: 12px; background: TelegramProfile.divider; clip: true;
-                    Image { x: 8px; y: 4px; width: parent.width - 16px; height: parent.width - 8px; source: gift.has-photo ? gift.photo : @image-url("icons/profile-gift.svg"); image-fit: contain; colorize: gift.has-photo ? #00000000 : Theme.muted; }
-                    Text { x: 6px; y: parent.width - 2px; width: parent.width - 12px; height: 17px; text: gift.title; color: Theme.ink; font-size: 11px; font-weight: 600; horizontal-alignment: center; overflow: elide; }
-                    Text { x: 6px; y: parent.width + 15px; width: parent.width - 12px; height: 15px; text: gift.detail; color: Theme.muted; font-size: 10px; horizontal-alignment: center; overflow: elide; }
-                    TouchArea { width: parent.width; height: parent.height; mouse-cursor: pointer; clicked => { root.selected-gift = gift; root.gift-open = true; } }
-                }
+            gift-grid := GiftGrid {
+                gifts: root.display-gifts ? root.gifts : [];
+                visible-top: -scroll.viewport-y - self.y + root.header-height;
+                visible-bottom: -scroll.viewport-y - self.y + scroll.height;
+                selected(gift) => { root.selected-gift = gift; root.gift-open = true; }
             }
             if root.display-gifts && root.gifts-status != "" : Rectangle {
                 height: gift-status.preferred-height + 32px;
@@ -178,8 +173,10 @@ export component ProfilePanel inherits Rectangle {
             Rectangle { height: 16px; }
         }
     }
-    // The header remains above the scroll body and collapses in two stages.
-    Rectangle {
+    // Pin both axes: an unconstrained Rectangle is auto-centered by Slint.
+    // Only the height collapses; the header's top must never follow that centering.
+    header := Rectangle {
+        x: 0px; y: 0px;
         width: parent.width; height: root.header-height; background: TelegramProfile.divider; clip: true;
         Rectangle {
             width: 20px + 60px * root.header-progress; height: self.width;
