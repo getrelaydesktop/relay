@@ -1,6 +1,19 @@
 use crate::MessageRow;
 use slint::{Model, VecModel};
 
+const MAX_PREVIEW_RGBA_BYTES: u64 = 64 * 1024 * 1024;
+const OVERSIZED_PREVIEW: &str = "Фото требует больше 64 МБ: превью отключено, файл можно отправить";
+
+fn check_preview_rgba_bytes(width: u32, height: u32) -> Result<(), String> {
+    let bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4));
+    match bytes {
+        Some(bytes) if bytes <= MAX_PREVIEW_RGBA_BYTES => Ok(()),
+        _ => Err(OVERSIZED_PREVIEW.into()),
+    }
+}
+
 pub fn file_preview(path: &str) -> Result<Option<image::RgbaImage>, String> {
     let path = std::path::Path::new(path);
     if path.as_os_str().is_empty() {
@@ -20,16 +33,20 @@ pub fn file_preview(path: &str) -> Result<Option<image::RgbaImage>, String> {
     }
     let mut reader = image::ImageReader::open(path).map_err(|_| "Не удалось открыть фото")?;
     let mut limits = image::Limits::default();
-    limits.max_alloc = Some(64 * 1024 * 1024);
+    limits.max_alloc = Some(MAX_PREVIEW_RGBA_BYTES);
     limits.max_image_width = Some(8192);
     limits.max_image_height = Some(8192);
     reader.limits(limits);
     let image = reader.decode().map_err(|_| "Не удалось прочитать фото")?;
-    Ok(Some(
+    // Decoder allocation limits depend on source color depth. A highly
+    // compressed grayscale image may fit those limits but not an RGBA buffer.
+    check_preview_rgba_bytes(image.width(), image.height())?;
+    let image = if image.width() > 960 || image.height() > 960 {
+        image.resize(960, 960, image::imageops::FilterType::Lanczos3)
+    } else {
         image
-            .resize(960, 960, image::imageops::FilterType::Lanczos3)
-            .into_rgba8(),
-    ))
+    };
+    Ok(Some(image.into_rgba8()))
 }
 
 pub fn retain(row: &mut MessageRow, old: &MessageRow) {
@@ -132,6 +149,13 @@ mod tests {
             .unwrap();
         let preview = file_preview(photo.to_str().unwrap()).unwrap().unwrap();
         assert_eq!((preview.width(), preview.height()), (960, 720));
+        let tiny = dir.join("tiny.png");
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([20, 160, 80, 255]))
+            .save(&tiny)
+            .unwrap();
+        let preview = file_preview(tiny.to_str().unwrap()).unwrap().unwrap();
+        assert_eq!((preview.width(), preview.height()), (3, 2));
+        std::fs::remove_file(tiny).unwrap();
         let corrupt = dir.join("corrupt.png");
         std::fs::write(&corrupt, b"not an image").unwrap();
         assert!(file_preview(corrupt.to_str().unwrap()).is_err());
@@ -139,5 +163,31 @@ mod tests {
         std::fs::remove_file(photo).unwrap();
         std::fs::remove_file(corrupt).unwrap();
         std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn rgba_limit_is_checked_without_overflow_and_allows_the_boundary() {
+        assert!(check_preview_rgba_bytes(4096, 4096).is_ok());
+        assert!(check_preview_rgba_bytes(4097, 4096).is_err());
+        assert!(check_preview_rgba_bytes(u32::MAX, u32::MAX).is_err());
+    }
+
+    #[test]
+    fn highly_compressed_grayscale_cannot_bypass_rgba_memory_limit() {
+        let path = std::env::temp_dir().join(format!(
+            "relay-preview-grayscale-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // Raw grayscale fits the decoder limit and both dimensions are valid,
+        // but expansion to RGBA would exceed 64 MiB by one column.
+        image::GrayImage::new(4097, 4096).save(&path).unwrap();
+        assert!(path.metadata().unwrap().len() < 16 * 1024 * 1024);
+        let result = file_preview(path.to_str().unwrap());
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(result.unwrap_err(), OVERSIZED_PREVIEW);
     }
 }

@@ -6,8 +6,15 @@ export component SettingsHome inherits Rectangle {
     in property <string> user-phone: "+7 999 000-00-00";
     in property <string> user-username: "@relay_desktop";
     in property <string> user-initials: "R";
+    in property <image> user-avatar;
+    in property <bool> user-has-avatar;
+    callback profile-requested();
+    callback gifts-changed();
     callback appearance-requested();
+    callback folders-requested();
     callback logout-requested();
+    in property <[string]> folder-names;
+    in property <[int]> folder-counts;
     background: Theme.surface;
 
     Rectangle {
@@ -15,6 +22,7 @@ export component SettingsHome inherits Rectangle {
         y: 10px;
         width: 72px;
         height: 72px;
+        border-radius: 36px; clip: true;
         AvatarFill {
             x: 0px;
             y: 0px;
@@ -33,6 +41,8 @@ export component SettingsHome inherits Rectangle {
             horizontal-alignment: center;
             vertical-alignment: center;
         }
+        if root.user-has-avatar : Image { width: parent.width; height: parent.height; source: root.user-avatar; image-fit: cover; }
+        TouchArea { width: parent.width; height: parent.height; mouse-cursor: pointer; clicked => { root.profile-requested(); } }
     }
     Text {
         x: 112px;
@@ -82,7 +92,7 @@ export component SettingsHome inherits Rectangle {
     for name[index] in [
         "My Account", "Notifications and Sounds", "Privacy and Security",
         "Chat Settings", "Chat Folders", "Advanced", "Speakers and Camera",
-        "Battery and Animations", "Language", "Log Out"
+        "Battery and Animations", "Language", "Log Out", "Telegram Gifts"
     ] : Rectangle {
         x: 0px;
         y: 112px + index * 40px;
@@ -125,14 +135,19 @@ export component SettingsHome inherits Rectangle {
             horizontal-alignment: right;
             vertical-alignment: center;
         }
+        if index == 10 : Text { x: parent.width - 82px; width: 64px; height: parent.height; text: Theme.show-gifts ? "Вкл." : "Выкл."; color: Theme.accent; vertical-alignment: center; horizontal-alignment: right; }
         pointer := TouchArea {
             width: parent.width;
             height: parent.height;
-            mouse-cursor: index == 3 || index == 9 ? MouseCursor.pointer : MouseCursor.default;
-            enabled: index == 3 || index == 9;
+            mouse-cursor: index == 3 || index == 4 || index == 9 ? MouseCursor.pointer : MouseCursor.default;
+            enabled: index == 0 || index == 3 || index == 4 || index == 9 || index == 10;
             clicked => {
-                if index == 3 {
+                if index == 0 { root.profile-requested(); }
+                else if index == 10 { Theme.show-gifts = !Theme.show-gifts; root.gifts-changed(); }
+                else if index == 3 {
                     root.appearance-requested();
+                } else if index == 4 {
+                    root.folders-requested();
                 } else if index == 9 {
                     root.logout-requested();
                 }

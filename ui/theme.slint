@@ -1,6 +1,8 @@
 import { VectorIcon } from "icons/vector-icons.slint";
 import { TelegramMotion, RippleSurface } from "motion.slint";
 export global Theme {
+    callback open-profile(string);
+    in-out property <bool> show-gifts: true;
     in-out property <int> design: 0;
     in-out property <bool> dark: true;
     in-out property <color> seed: #4266a7;
@@ -318,14 +320,21 @@ export component Entry inherits Rectangle {
 // Telegram's composer grows with wrapped lines and keeps Enter / Shift+Enter
 // distinct. TextInput retains native cursor, selection, undo and IME behavior.
 export component Composer inherits Rectangle {
+    in property <bool> expanded: false;
+    out property <int> line-count: round(measure.preferred-height / max(1px, baseline.preferred-height));
     in-out property <string> text;
     in property <string> placeholder;
     in property <bool> placeholder-visible: true;
     in property <bool> read-only: false;
     out property <length> content-height: clamp(46px + measure.preferred-height - baseline.preferred-height, 46px, 166px);
     callback accepted();
+    callback edited();
+    callback format-requested(string, int, int);
+    out property <int> selection-start: input.anchor-position-byte-offset;
+    out property <int> selection-end: input.cursor-position-byte-offset;
     forward-focus: input;
     clip: true;
+    TouchArea { width: parent.width; height: parent.height; clicked => { input.focus(); } }
     baseline := Text { visible: false; text: " "; font-size: 13px; }
     measure := Text {
         visible: false;
@@ -351,8 +360,19 @@ export component Composer inherits Rectangle {
             selection-background-color: Theme.accent;
             selection-foreground-color: #ffffff;
             single-line: false; wrap: word-wrap; read-only: root.read-only;
+            edited => { root.edited(); }
             key-pressed(event) => {
-                if event.text == Key.Return && !event.modifiers.shift {
+                if event.modifiers.control {
+                    if event.text == "v" || event.text == "V" || event.text == "м" || event.text == "М" || event.text == "\u{0016}" { if !root.read-only { input.paste(); } return accept; }
+                    if event.text == "c" || event.text == "C" || event.text == "с" || event.text == "С" { input.copy(); return accept; }
+                    if event.text == "x" || event.text == "X" || event.text == "ч" || event.text == "Ч" { if !root.read-only { input.cut(); } return accept; }
+                    if event.text == "a" || event.text == "A" || event.text == "ф" || event.text == "Ф" { input.select-all(); return accept; }
+                    if event.text == "b" || event.text == "B" || event.text == "и" || event.text == "И" { root.format-requested("bold", root.selection-start, root.selection-end); return accept; }
+                    if event.text == "i" || event.text == "I" || event.text == "ш" || event.text == "Ш" { root.format-requested("italic", root.selection-start, root.selection-end); return accept; }
+                    if event.text == "u" || event.text == "U" || event.text == "г" || event.text == "Г" { root.format-requested("underline", root.selection-start, root.selection-end); return accept; }
+                    if event.text == "m" || event.text == "M" || event.text == "ь" || event.text == "Ь" { root.format-requested("code", root.selection-start, root.selection-end); return accept; }
+                }
+                if event.text == Key.Return && !event.modifiers.shift && !root.expanded {
                     if !root.read-only { root.accepted(); }
                     return accept;
                 }
@@ -366,6 +386,14 @@ export component Composer inherits Rectangle {
                 scroll.viewport-y = clamp(scroll.viewport-y, min(0px, scroll.height - scroll.viewport-height), 0px);
             }
         }
+    }
+    public function edit-action(action: string) {
+        if action == "paste" { if !root.read-only { input.paste(); } }
+        else if action == "copy" { input.copy(); }
+        else if action == "cut" { if !root.read-only { input.cut(); } }
+        else if action == "select-all" { input.select-all(); }
+        else { root.format-requested(action, root.selection-start, root.selection-end); }
+        input.focus();
     }
 }
 

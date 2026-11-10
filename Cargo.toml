@@ -21,20 +21,23 @@ glass_pumpkin = "=2.0.0-rc0"
 base64 = "0.22"
 qrcode = { version = "0.14", default-features = false }
 chrono = "0.4"
+rfd = "=0.17.2"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 
 [build-dependencies]
 slint-build = "=1.16.1"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }
 
 [dev-dependencies]
 # Render UI regression tests with the same engine as the application.
 i-slint-renderer-skia = "=1.16.1"
 
+# Optimize the generated Slint layout/binding code as well as dependencies.
+# Keep dev builds inexpensive; release artifacts are the performance build.
 [profile.release.package.relay-desktop]
-opt-level = 1
+opt-level = 3
 
 [profile.dev]
 opt-level = 1

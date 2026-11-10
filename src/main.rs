@@ -6,9 +6,15 @@ use slint::winit_030::{WinitWindowAccessor, winit::window::ResizeDirection};
 use slint::{Color, ComponentHandle, Model, ModelRc, Timer, VecModel};
 
 slint::include_modules!();
+mod attachments;
+mod composer;
+mod currency;
 mod details;
+mod local_preview;
+mod media;
 mod preferences;
 mod presence;
+mod profiles;
 mod qr;
 mod render_assets;
 mod rich_text;
@@ -16,8 +22,10 @@ mod sending;
 mod telegram;
 #[cfg(windows)]
 mod tray;
+mod view_media;
 #[cfg(test)]
 mod visual_tests;
+mod window_chrome;
 
 const AVATAR_PALETTES: [((u8, u8, u8), (u8, u8, u8)); 7] = [
     ((255, 136, 94), (228, 82, 70)),
@@ -33,9 +41,12 @@ struct Chat {
     row: ChatRow,
     messages: Rc<VecModel<MessageRow>>,
     draft: slint::SharedString,
+    formatted_draft: composer::Draft,
+    editor_history: composer::History,
 }
 
 struct Demo {
+    media: view_media::Residency,
     detail_requests: std::collections::HashSet<(i32, i32)>,
     preview_lru: std::collections::VecDeque<(i32, i32, usize)>,
     preview_bytes: usize,
@@ -49,6 +60,10 @@ struct Demo {
     live_mode: bool,
     next_local_id: i32,
     pending_send: Option<sending::PendingSend>,
+    network_poll: Timer,
+    tray_scroll_y: f32,
+    #[cfg(windows)]
+    tray_placement: Option<window_chrome::Placement>,
     bridge: telegram::TelegramBridge,
 }
 
@@ -66,6 +81,7 @@ impl Demo {
             return;
         };
         self.viewed_photo = Some((peer_id, mid));
+        ui.set_photo_from_profile(false);
         ui.set_photo_title(chat.row.title.clone());
         ui.set_photo_index(index as i32 + 1);
         ui.set_photo_count(photos.len() as i32);
@@ -82,6 +98,7 @@ impl Demo {
 
     fn with_bridge(bridge: telegram::TelegramBridge) -> Self {
         Self {
+            media: Default::default(),
             detail_requests: Default::default(),
             preview_lru: Default::default(),
             preview_bytes: 0,
@@ -95,6 +112,10 @@ impl Demo {
             live_mode: false,
             next_local_id: -1,
             pending_send: None,
+            network_poll: Timer::default(),
+            tray_scroll_y: 0.0,
+            #[cfg(windows)]
+            tray_placement: None,
             bridge,
         }
     }
@@ -166,7 +187,70 @@ impl Demo {
         })
     }
 
+    fn suspend_ui(&mut self, ui: &Desktop) {
+        if !ui.get_window_visible() {
+            return;
+        }
+        self.tray_scroll_y = ui.get_history_scroll_y();
+        #[cfg(windows)]
+        {
+            self.tray_placement = ui
+                .window()
+                .with_winit_window(window_chrome::Placement::capture)
+                .flatten();
+        }
+        ui.set_window_visible(false);
+        ui.set_photo_from_profile(false);
+        ui.set_photo_open(false);
+        ui.set_profile_open(false);
+        self.release_media(ui);
+        // Detach delegate trees after releasing pixels, retaining account/drafts.
+        ui.set_messages(Default::default());
+        ui.set_chats(Default::default());
+        ui.set_folders(Default::default());
+        self.chat_model.set_vec(vec![]);
+        self.folder_model.set_vec(vec![]);
+    }
+
+    fn resume_ui(&self, ui: &Desktop) {
+        if ui.get_window_visible() {
+            return;
+        }
+        ui.set_window_visible(true);
+        if self.live_mode && !ui.get_auth_required() {
+            self.bridge.load_avatar(0);
+        }
+        self.refresh_chats(ui);
+        self.refresh_history(ui);
+        if ui.get_file_open() && !ui.get_file_path().is_empty() {
+            ui.invoke_preview_file();
+        }
+        let y = self.tray_scroll_y;
+        #[cfg(windows)]
+        let placement = self.tray_placement;
+        let weak = ui.as_weak();
+        Timer::single_shot(Duration::ZERO, move || {
+            if let Some(ui) = weak.upgrade() {
+                if ui.get_window_visible() {
+                    // The restore callback has called show() by this point.
+                    #[cfg(windows)]
+                    if let Some(placement) = placement {
+                        ui.window().with_winit_window(|window| {
+                            if let Err(error) = placement.restore(window) {
+                                eprintln!("Could not restore window placement: {error}");
+                            }
+                        });
+                    }
+                    ui.set_history_scroll_y(y);
+                }
+            }
+        });
+    }
+
     fn refresh_chats(&self, ui: &Desktop) {
+        if !ui.get_window_visible() {
+            return;
+        }
         let mut rows: Vec<_> = self
             .matching(&ui.get_query())
             .map(|chat| chat.row.clone())
@@ -219,6 +303,9 @@ impl Demo {
     }
 
     fn refresh_history(&self, ui: &Desktop) {
+        if !ui.get_window_visible() {
+            return;
+        }
         if self.chats.is_empty() {
             ui.set_messages(ModelRc::new(VecModel::<MessageRow>::default()));
             ui.set_active_chat(ChatRow::default());
@@ -226,6 +313,9 @@ impl Demo {
         }
         let idx = self.active.min(self.chats.len() - 1);
         let chat = &self.chats[idx];
+        // Resolve once when opening/refreshing history, not once per visible
+        // row in the deferred thumbnail scan.
+        details::resolve_local(&chat.messages, &chat.row.title);
         ui.set_active_chat(chat.row.clone());
         ui.set_messages(ModelRc::from(Rc::clone(&chat.messages)));
         let weak = ui.as_weak();
@@ -249,6 +339,13 @@ impl Demo {
         let Some(index) = self.chats.iter().position(|chat| chat.row.id == id) else {
             return;
         };
+        if index != self.active || !ui.get_show_chat() {
+            self.release_history_pixels();
+        }
+        self.bridge.cancel_photo();
+        ui.set_photo_image(Default::default());
+        ui.set_photo_from_profile(false);
+        ui.invoke_cancel_attachments();
         if !self.chats.is_empty() && self.active < self.chats.len() {
             self.chats[self.active].draft = ui.get_draft();
         }
@@ -263,6 +360,15 @@ impl Demo {
         ui.set_chat_search_open(false);
         self.chats[index].row.unread = 0;
         ui.set_draft(self.chats[index].draft.clone());
+        self.chats[index]
+            .formatted_draft
+            .edit(ui.get_draft().as_str());
+        composer::preview(ui, &self.chats[index].formatted_draft);
+        ui.set_file_open(false);
+        ui.set_editor_menu_open(false);
+        ui.set_link_editor_open(false);
+        ui.set_large_editor_open(false);
+        ui.set_attachments(Default::default());
         ui.set_show_chat(true);
         ui.set_has_chat(true);
         if self.live_mode && load_history {
@@ -279,19 +385,22 @@ impl Demo {
             return;
         }
         let draft = ui.get_draft();
-        let body = draft.trim();
-        if body.is_empty() || self.chats.is_empty() {
+        let body = draft.as_str();
+        if body.trim().is_empty() || self.chats.is_empty() {
             return;
         }
         let idx = self.active.min(self.chats.len() - 1);
         let peer_id = self.chats[idx].row.id;
+        self.chats[idx].formatted_draft.edit(body);
+        let entities = self.chats[idx].formatted_draft.entities.clone();
         if matches!(self.chats[idx].row.channel_access, 1 | 3) {
             return;
         }
         if self.live_mode && ui.get_edit_message_id() > 0 {
             ui.set_message_busy(true);
             ui.set_network_status("Отправка…".into());
-            self.bridge.edit(peer_id, ui.get_edit_message_id(), body);
+            self.bridge
+                .edit_formatted(peer_id, ui.get_edit_message_id(), body, entities);
             return;
         }
         let token = self.next_local_id;
@@ -299,11 +408,14 @@ impl Demo {
         let reply = (ui.get_reply_message() > 0).then(|| ui.get_reply_message());
         let now = chrono::Local::now();
         let mut row = message(body, &now.format("%H:%M").to_string(), true);
+        row.has_formatting = !entities.is_empty();
+        row.formatted_body = rich_text::format(body, &entities, 0);
         row.id = if self.live_mode { token } else { -token };
         row.date = now.format("%d.%m.%Y").to_string().into();
         row.send_token = token;
         row.reply_to = reply.unwrap_or_default();
         row.sender = "Вы".into();
+        row.entities_json = composer::encode(&entities).into();
         row.reply_author = ui.get_reply_author();
         row.reply_body = ui.get_reply_body();
         row.reply_resolved = reply.is_some();
@@ -316,7 +428,9 @@ impl Demo {
         chat.row.preview = body.into();
         chat.row.outgoing = true;
         chat.draft = Default::default();
+        chat.formatted_draft = Default::default();
         ui.set_draft(Default::default());
+        composer::preview(ui, &composer::Draft::default());
         ui.set_reply_message(0);
         ui.invoke_animate_sent_message();
         self.refresh_chats(ui);
@@ -329,7 +443,7 @@ impl Demo {
             ui.set_text_send_pending(true);
             ui.set_message_busy(true);
             ui.set_network_status(Default::default());
-            self.bridge.send_message(peer_id, body, reply);
+            self.bridge.send_formatted(peer_id, body, reply, entities);
         }
     }
 
@@ -354,6 +468,7 @@ impl Demo {
         row.pending = true;
         row.failed = false;
         let body = row.body.clone();
+        let entities = composer::decode(row.entities_json.as_str());
         let reply = (row.reply_to > 0).then_some(row.reply_to);
         chat.messages.set_row_data(index, row);
         let peer_id = chat.row.id;
@@ -361,17 +476,156 @@ impl Demo {
         ui.set_text_send_pending(true);
         ui.set_message_busy(true);
         ui.set_network_status(Default::default());
-        self.bridge.send_message(peer_id, &body, reply);
+        self.bridge.send_formatted(peer_id, &body, reply, entities);
     }
 
     fn poll_telegram(&mut self, ui: &Desktop) {
+        self.network_poll.stop();
         self.bridge.begin_poll();
+        let started = std::time::Instant::now();
+        let mut handled = 0;
         let mut avatars_changed = false;
         loop {
+            // Yield between events so a burst of background results cannot
+            // monopolize the UI thread. One expensive event can still exceed
+            // this soft budget; the queue is never dropped or reordered.
+            if handled >= 32 || (handled > 0 && started.elapsed() >= Duration::from_millis(4)) {
+                let weak = ui.as_weak();
+                self.network_poll.start(
+                    slint::TimerMode::SingleShot,
+                    Duration::from_millis(1),
+                    move || {
+                        if let Some(ui) = weak.upgrade() {
+                            ui.invoke_network_events();
+                        }
+                    },
+                );
+                break;
+            }
             let Some(ev) = self.bridge.try_recv() else {
                 break;
             };
+            handled += 1;
             match ev {
+                telegram::TgEvent::DiscardedMedia => continue,
+                telegram::TgEvent::ProfileReady { key, profile } => {
+                    if ui.get_window_visible()
+                        && !ui.get_auth_required()
+                        && ui.get_profile_open()
+                        && ui.get_profile_key() == key
+                    {
+                        ui.set_profile_is_user(profile.is_user);
+                        ui.set_profile_is_self(profile.is_self);
+                        ui.set_profile_is_bot(profile.is_bot);
+                        ui.set_profile_online(profile.online);
+                        ui.set_profile_birthday(profile.birthday.into());
+                        if let Some(muted) = profile.notifications_muted {
+                            if !ui.get_profile_action_busy() {
+                                ui.set_profile_muted(muted);
+                            }
+                            ui.set_profile_mute_ready(true);
+                        }
+                        let link = if !profile.username.is_empty() {
+                            format!("https://t.me/{}", profile.username.trim_start_matches('@'))
+                        } else if profile.is_self && !profile.phone.is_empty() {
+                            format!("https://t.me/{}", profile.phone)
+                        } else {
+                            String::new()
+                        };
+                        ui.set_profile_qr_matrix(if link.is_empty() {
+                            Default::default()
+                        } else {
+                            qr::encode_qr_matrix(&link).into()
+                        });
+                        ui.set_profile_link(link.into());
+                        ui.set_profile_name(profile.name.into());
+                        ui.set_profile_initials(profile.initials.into());
+                        ui.set_profile_presence(profile.presence.into());
+                        ui.set_profile_username(profile.username.into());
+                        ui.set_profile_phone(profile.phone.into());
+                        ui.set_profile_about(profile.about.into());
+                        if let Some(photo) = profile.photo {
+                            if photo.width() > 0 && photo.height() > 0
+                                && photo.width() <= 256 && photo.height() <= 256
+                            {
+                                ui.set_profile_photo(photo.image());
+                                ui.set_profile_has_photo(true);
+                            }
+                        }
+                        ui.set_profile_status(Default::default());
+                    }
+                }
+                telegram::TgEvent::GiftsReady {
+                    key,
+                    gifts,
+                    next,
+                    append,
+                } => {
+                    self.gifts_ready(ui, key, gifts, next, append);
+                }
+                telegram::TgEvent::GiftPreview {
+                    key,
+                    gift_key,
+                    pixels,
+                    kind,
+                } => {
+                    self.gift_preview(ui, key, gift_key, pixels, kind);
+                }
+                telegram::TgEvent::GiftPreviewFailed {
+                    key,
+                    gift_key,
+                    kind,
+                } => {
+                    self.gift_failed(ui, key, gift_key, kind);
+                }
+                telegram::TgEvent::GiftsFailed { key, message } => {
+                    if ui.get_profile_key() == key {
+                        ui.set_profile_busy(false);
+                        ui.set_profile_gifts_status(
+                            format!("Не удалось загрузить подарки: {message}").into(),
+                        );
+                    }
+                }
+                telegram::TgEvent::ProfileMuteResult {
+                    key,
+                    muted,
+                    message,
+                } => {
+                    if ui.get_profile_key() == key {
+                        ui.set_profile_action_busy(false);
+                        if let Some(muted) = muted {
+                            ui.set_profile_muted(muted);
+                        } else {
+                            ui.set_profile_status(
+                                format!("Не удалось изменить уведомления: {message}").into(),
+                            );
+                        }
+                    }
+                }
+                telegram::TgEvent::ProfileFailed { key, message } => {
+                    if ui.get_profile_key() == key {
+                        ui.set_profile_status(
+                            format!("Не удалось загрузить данные: {message}").into(),
+                        );
+                        ui.set_profile_busy(false);
+                    }
+                }
+                telegram::TgEvent::FileSent { path } => {
+                    let rows = ui
+                        .get_attachments()
+                        .iter()
+                        .filter(|r| std::path::Path::new(r.path.as_str()) != path)
+                        .collect::<Vec<_>>();
+                    ui.set_attachments(ModelRc::new(VecModel::from(rows)));
+                    ui.set_attachment_caption(Default::default());
+                }
+                telegram::TgEvent::FilesSent => {
+                    ui.set_upload_busy(false);
+                    ui.set_message_busy(false);
+                    ui.set_attachments(Default::default());
+                    ui.set_attachment_caption(Default::default());
+                    ui.set_network_status("Файлы отправлены".into());
+                }
                 telegram::TgEvent::Presence {
                     peer_id,
                     text,
@@ -391,51 +645,7 @@ impl Demo {
                     key,
                     pixels,
                 } => {
-                    self.detail_requests.remove(&(peer_id, message_id));
-                    if let Some(chat) = self.chats.iter().find(|chat| chat.row.id == peer_id) {
-                        if let Some(index) =
-                            chat.messages.iter().position(|row| row.id == message_id)
-                        {
-                            let mut row = chat.messages.row_data(index).unwrap();
-                            if !key.is_empty() && row.photo_key != key {
-                                continue;
-                            }
-                            row.preview_failed = pixels.is_none();
-                            if let Some(pixels) = pixels {
-                                let bytes = pixels.len();
-                                row.preview = slint_image(&pixels);
-                                row.has_preview = true;
-                                let mut freed = 0;
-                                self.preview_lru.retain(|&(peer, mid, bytes)| {
-                                    if peer == peer_id && mid == message_id {
-                                        freed += bytes;
-                                        false
-                                    } else {
-                                        true
-                                    }
-                                });
-                                self.preview_bytes = self.preview_bytes.saturating_sub(freed);
-                                self.preview_lru.push_back((peer_id, message_id, bytes));
-                                self.preview_bytes += bytes;
-                            }
-                            chat.messages.set_row_data(index, row);
-                        }
-                    }
-                    while self.preview_bytes > 24 * 1024 * 1024 {
-                        let Some((peer, mid, bytes)) = self.preview_lru.pop_front() else {
-                            break;
-                        };
-                        self.preview_bytes = self.preview_bytes.saturating_sub(bytes);
-                        if let Some(chat) = self.chats.iter().find(|chat| chat.row.id == peer) {
-                            if let Some(index) = chat.messages.iter().position(|row| row.id == mid)
-                            {
-                                let mut row = chat.messages.row_data(index).unwrap();
-                                row.preview = Default::default();
-                                row.has_preview = false;
-                                chat.messages.set_row_data(index, row);
-                            }
-                        }
-                    }
+                    self.thumbnail_ready(ui, peer_id, message_id, key, pixels);
                 }
                 telegram::TgEvent::ReplyResolved {
                     peer_id,
@@ -538,19 +748,22 @@ impl Demo {
                                 } else {
                                     AVATAR_PALETTES[i % AVATAR_PALETTES.len()]
                                 };
-                                let (preview, time, outgoing) = d
+                                let preview =
+                                    d.messages.last().map(message_preview).unwrap_or_default();
+                                let (time, outgoing) = d
                                     .messages
                                     .last()
-                                    .map(|m| (m.body.as_str(), m.time.as_str(), m.outgoing))
-                                    .unwrap_or(("", "", false));
+                                    .map(|m| (m.time.as_str(), m.outgoing))
+                                    .unwrap_or(("", false));
                                 Chat {
                                     row: ChatRow {
+                                        no_photo: d.no_photo,
                                         id: d.id,
                                         title: chat_preview(&d.title),
                                         initials: d.initials.into(),
                                         accent: Color::from_rgb_u8(bot.0, bot.1, bot.2),
                                         accent_top: Color::from_rgb_u8(top.0, top.1, top.2),
-                                        preview: chat_preview(preview),
+                                        preview,
                                         time: time.into(),
                                         unread: d.unread,
                                         outgoing,
@@ -566,10 +779,13 @@ impl Demo {
                                         d.messages.iter().map(live_message).collect::<Vec<_>>(),
                                     )),
                                     draft: Default::default(),
+                                    formatted_draft: Default::default(),
+                                    editor_history: Default::default(),
                                 }
                             })
                             .collect();
                         self.active = 0;
+                        self.bridge.load_avatar(0);
                         ui.set_has_chat(!self.chats.is_empty());
                         self.refresh_chats(ui);
                         self.refresh_history(ui);
@@ -583,7 +799,7 @@ impl Demo {
                         let rows: Vec<MessageRow> =
                             messages.iter().map(live_message).collect::<Vec<_>>();
                         if let Some(last) = messages.last() {
-                            chat.row.preview = chat_preview(&last.body);
+                            chat.row.preview = message_preview(last);
                             chat.row.time = last.time.clone().into();
                             chat.row.outgoing = last.outgoing;
                             chat.row.last_message_id = last.id;
@@ -611,7 +827,9 @@ impl Demo {
                 }
                 telegram::TgEvent::MessageSent { peer_id, message } => {
                     ui.set_text_send_pending(false);
-                    ui.set_message_busy(false);
+                    if !ui.get_upload_busy() {
+                        ui.set_message_busy(false);
+                    }
                     ui.set_network_status(Default::default());
                     let pending = self.pending_send.take();
                     if let Some(pending) = &pending {
@@ -623,16 +841,6 @@ impl Demo {
                                     live_message(&message),
                                 );
                             }
-                        }
-                    } else {
-                        // File sending still uses the composer as its caption.
-                        if let Some(chat) = self.chats.iter_mut().find(|c| c.row.id == peer_id) {
-                            chat.draft = Default::default();
-                        }
-                        if self.chats.get(self.active).map(|c| c.row.id) == Some(peer_id) {
-                            ui.set_draft(Default::default());
-                            ui.set_reply_message(0);
-                            ui.set_edit_message_id(0);
                         }
                     }
                     ui.set_file_path(Default::default());
@@ -708,6 +916,10 @@ impl Demo {
                     }
                 }
                 telegram::TgEvent::SendFailed { message } => {
+                    if ui.get_upload_busy() {
+                        ui.set_file_open(true);
+                    }
+                    ui.set_upload_busy(false);
                     ui.set_text_send_pending(false);
                     ui.set_message_busy(false);
                     ui.set_network_status(message.into());
@@ -733,6 +945,7 @@ impl Demo {
                         );
                         chat.messages
                             .set_vec(d.messages.iter().map(live_message).collect::<Vec<_>>());
+                        chat.row.no_photo = d.no_photo;
                         chat.row.channel_access = d.channel as i32;
                         chat.row.presence = d.presence.into();
                         chat.row.online = d.online;
@@ -758,6 +971,7 @@ impl Demo {
                         );
                         chat.messages
                             .set_vec(d.messages.iter().map(live_message).collect::<Vec<_>>());
+                        chat.row.no_photo = d.no_photo;
                         chat.row.channel_access = d.channel as i32;
                         chat.row.presence = d.presence.into();
                         chat.row.online = d.online;
@@ -766,9 +980,12 @@ impl Demo {
                     }
                 }
                 telegram::TgEvent::LoggedOut => {
-                    self.detail_requests.clear();
-                    self.preview_lru.clear();
-                    self.preview_bytes = 0;
+                    ui.set_photo_from_profile(false);
+                    ui.set_profile_open(false);
+                    ui.set_photo_open(false);
+                    ui.invoke_cancel_attachments();
+                    ui.set_auth_required(true);
+                    self.release_media(ui);
                     ui.set_text_send_pending(false);
                     self.pending_send = None;
                     self.live_mode = false;
@@ -804,25 +1021,43 @@ impl Demo {
                     }
                     self.refresh_chats(ui);
                 }
+                telegram::TgEvent::ProfilePhotoReady { key, pixels } => {
+                    if ui.get_window_visible()
+                        && !ui.get_auth_required()
+                        && ui.get_photo_open()
+                        && ui.get_photo_from_profile()
+                        && ui.get_profile_key() == key
+                    {
+                        ui.set_photo_image(pixels.image());
+                        ui.set_photo_status(Default::default());
+                    }
+                }
+                telegram::TgEvent::ProfilePhotoFailed { key, message } => {
+                    if ui.get_window_visible()
+                        && !ui.get_auth_required()
+                        && ui.get_photo_open()
+                        && ui.get_photo_from_profile()
+                        && ui.get_profile_key() == key
+                    {
+                        ui.set_photo_status(message.into());
+                    }
+                }
                 telegram::TgEvent::PhotoReady {
                     peer_id,
                     message_id,
                     pixels,
                 } => {
-                    if ui.get_photo_open() && self.viewed_photo == Some((peer_id, message_id)) {
-                        ui.set_photo_image(slint_image(&pixels));
+                    if ui.get_window_visible()
+                        && !ui.get_auth_required()
+                        && ui.get_photo_open()
+                        && self.viewed_photo == Some((peer_id, message_id))
+                    {
+                        ui.set_photo_image(pixels.image());
                         ui.set_photo_status(Default::default());
                     }
                 }
                 telegram::TgEvent::AvatarReady { peer_id, pixels } => {
-                    if let Some(chat) = self.chats.iter_mut().find(|chat| chat.row.id == peer_id) {
-                        chat.row.avatar = slint_image(&pixels);
-                        chat.row.has_avatar = true;
-                        if ui.get_active_chat().id == peer_id {
-                            ui.set_active_chat(chat.row.clone());
-                        }
-                        avatars_changed = true;
-                    }
+                    avatars_changed |= self.avatar_ready(ui, peer_id, pixels);
                 }
                 telegram::TgEvent::ChannelJoined { peer_id, access } => {
                     ui.set_message_busy(false);
@@ -900,7 +1135,7 @@ impl Demo {
                 chat.messages.push(row);
             }
             if chat.messages.iter().last().is_some_and(|m| m.id == msg.id) {
-                chat.row.preview = chat_preview(&msg.body);
+                chat.row.preview = message_preview(msg);
                 chat.row.time = msg.time.clone().into();
                 chat.row.outgoing = msg.outgoing;
                 chat.row.last_message_id = msg.id;
@@ -957,6 +1192,8 @@ impl Chat {
                     .collect::<Vec<_>>(),
             )),
             draft: Default::default(),
+            formatted_draft: Default::default(),
+            editor_history: Default::default(),
         }
     }
 }
@@ -973,6 +1210,7 @@ fn update_rows<Row: Clone + PartialEq + 'static>(model: &VecModel<Row>, rows: Ve
     }
 }
 
+#[cfg(test)]
 fn slint_image(pixels: &image::RgbaImage) -> slint::Image {
     let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
         pixels.as_raw(),
@@ -1004,6 +1242,8 @@ fn message(body: &str, time: &str, outgoing: bool) -> MessageRow {
 
 fn live_message(m: &telegram::TgMessage) -> MessageRow {
     MessageRow {
+        sender_key: m.sender_key.clone().into(),
+        entities_json: composer::encode(&m.entities).into(),
         send_token: 0,
         receive_token: 0,
         pending: false,
@@ -1031,6 +1271,23 @@ fn live_message(m: &telegram::TgMessage) -> MessageRow {
     }
 }
 
+fn message_preview(message: &telegram::TgMessage) -> slint::SharedString {
+    let body = chat_preview(&message.body);
+    if message.service || message.channel_post {
+        return body;
+    }
+    let sender = if message.outgoing {
+        "Вы"
+    } else {
+        message.sender.as_str()
+    };
+    if sender.is_empty() {
+        body
+    } else {
+        format!("{}: {body}", chat_preview(sender)).into()
+    }
+}
+
 fn chat_preview(text: &str) -> slint::SharedString {
     text.split_whitespace().collect::<Vec<_>>().join(" ").into()
 }
@@ -1039,8 +1296,42 @@ fn install_rendering(ui: &Desktop) {
     ui.global::<Theme>()
         .on_open_link(|url| rich_text::open_link(url.as_str()));
     let weak = ui.as_weak();
+    let mut cursor = (0.0, 0.0);
     ui.window().on_winit_window_event(move |_, event| {
-        use slint::winit_030::winit::event::{MouseButton, WindowEvent};
+        use slint::winit_030::winit::event::{ElementState, MouseButton, WindowEvent};
+        if let Some(ui) = weak.upgrade() {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    let p = position.to_logical::<f64>(ui.window().scale_factor() as f64);
+                    cursor = (p.x, p.y);
+                }
+                WindowEvent::HoveredFile(_) => ui.set_file_drag_hover(true),
+                WindowEvent::HoveredFileCancelled => ui.set_file_drag_hover(false),
+                WindowEvent::DroppedFile(path) => {
+                    ui.set_file_drag_hover(false);
+                    attachments::stage(&ui, [path.clone()]);
+                }
+                WindowEvent::MouseInput {
+                    button: MouseButton::Right,
+                    state: ElementState::Pressed,
+                    ..
+                } if ui.get_has_chat()
+                    && (ui.get_large_editor_open()
+                        || cursor.1
+                            >= ui.window().size().height as f64
+                                / ui.window().scale_factor() as f64
+                                - ui.get_composer_height() as f64)
+                    && !ui.get_file_open()
+                    && !ui.get_link_editor_open()
+                    && !ui.get_editor_menu_open()
+                    && !ui.get_profile_open() =>
+                {
+                    ui.invoke_composer_menu();
+                    return slint::winit_030::EventResult::PreventDefault;
+                }
+                _ => {}
+            }
+        }
         if let WindowEvent::MouseInput { button, .. } = event {
             if let Some(ui) = weak.upgrade() {
                 ui.global::<Theme>()
@@ -1062,6 +1353,8 @@ fn install_rendering(ui: &Desktop) {
     ui.global::<TelegramMotion>()
         .on_remove_ripple(remove_ripple);
     let assets = Rc::new(RefCell::new(render_assets::Assets::new()));
+    let assets_clear = Rc::clone(&assets);
+    ui.on_clear_raster_cache(move || assets_clear.borrow_mut().clear());
 
     {
         let theme = ui.global::<Theme>();
@@ -1095,12 +1388,25 @@ fn remove_ripple(waves: ModelRc<i32>, generation: i32) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    slint::BackendSelector::new()
+    // Pinned Slint 1.16.1 supports destroying the native window/Skia surface
+    // on hide and restoring its placement on show. Set before spawning threads.
+    #[cfg(windows)]
+    unsafe {
+        std::env::set_var("SLINT_DESTROY_WINDOW_ON_HIDE", "1");
+    }
+    let renderer = slint::BackendSelector::new()
         .backend_name("winit".into())
-        .renderer_name("skia".into())
-        .select()?;
+        .renderer_name("skia".into());
+    // Skia's default Windows surface is software. Request the native GPU API
+    // explicitly so the cost of rasterizing every pixel does not grow on CPU.
+    #[cfg(windows)]
+    let renderer = renderer.require_d3d();
+    #[cfg(not(windows))]
+    let renderer = renderer.require_opengl();
+    renderer.select()?;
     let ui = Desktop::new()?;
     install_rendering(&ui);
+    attachments::install(&ui);
     #[cfg(windows)]
     let tray = {
         let restore = ui.as_weak();
@@ -1108,7 +1414,7 @@ fn main() -> Result<(), slint::PlatformError> {
         match tray::Tray::new(
             move || {
                 let _ = restore.clone().upgrade_in_event_loop(|ui| {
-                    ui.set_window_visible(true);
+                    ui.invoke_resume_ui();
                     ui.window().set_minimized(false);
                     let _ = ui.show();
                     ui.window()
@@ -1148,7 +1454,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_close_window(move || {
         if has_tray {
             if let Some(ui) = weak.upgrade() {
-                ui.set_window_visible(false);
+                ui.invoke_suspend_ui();
                 let _ = ui.hide();
             }
         } else if let Err(error) = slint::quit_event_loop() {
@@ -1159,7 +1465,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.window().on_close_requested(move || {
         if has_tray {
             if let Some(ui) = weak.upgrade() {
-                ui.set_window_visible(false);
+                ui.invoke_suspend_ui();
             }
         }
         slint::CloseRequestResponse::HideWindow
@@ -1168,10 +1474,29 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_drag_window(move || {
         if let Some(ui) = weak.upgrade() {
             ui.window().with_winit_window(|window| {
-                if let Err(error) = window.drag_window() {
+                #[cfg(windows)]
+                let result = window_chrome::begin_move(window);
+                #[cfg(not(windows))]
+                let result = window.drag_window();
+                if let Err(error) = result {
                     eprintln!("Could not move the window: {error}");
                 }
             });
+            // Windows consumes the matching release in its native move loop.
+            // Clear Slint's caption grab on the next event-loop turn.
+            #[cfg(windows)]
+            {
+                let weak = ui.as_weak();
+                Timer::single_shot(Duration::ZERO, move || {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.window()
+                            .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                                position: slint::LogicalPosition::new(1.0, 1.0),
+                                button: slint::platform::PointerEventButton::Left,
+                            });
+                    }
+                });
+            }
         }
     });
     let weak = ui.as_weak();
@@ -1209,6 +1534,123 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
     let demo = Rc::new(RefCell::new(Demo::new()));
+    local_preview::install(&ui);
+    view_media::install(&ui, &demo);
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_suspend_ui(move || {
+        if let Some(ui) = weak.upgrade() {
+            state.borrow_mut().suspend_ui(&ui);
+        }
+    });
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_resume_ui(move || {
+        if let Some(ui) = weak.upgrade() {
+            state.borrow().resume_ui(&ui);
+        }
+    });
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.global::<Theme>().on_open_profile(move |key| {
+        let Some(ui) = weak.upgrade() else { return };
+        if key.is_empty() || ui.get_auth_required() {
+            return;
+        }
+        let mut state = state.borrow_mut();
+        state.prepare_profile(&ui);
+        ui.set_settings_open(false);
+        ui.set_menu_open(false);
+        ui.set_profile_key(key.clone());
+        ui.set_profile_open(true);
+        ui.set_profile_is_user(false);
+        ui.set_profile_is_self(key == "self");
+        ui.set_profile_is_bot(false);
+        ui.set_profile_online(false);
+        ui.set_profile_birthday(Default::default());
+        ui.set_profile_action_busy(false);
+        ui.set_profile_mute_ready(false);
+        ui.set_profile_muted(false);
+        ui.set_profile_qr_matrix(Default::default());
+        ui.set_profile_link(Default::default());
+        ui.set_profile_gifts_status("Загрузка подарков…".into());
+        ui.set_profile_name("Загрузка…".into());
+        ui.set_profile_initials(Default::default());
+        ui.set_profile_presence(Default::default());
+        ui.set_profile_username(Default::default());
+        ui.set_profile_phone(Default::default());
+        ui.set_profile_about(Default::default());
+        ui.set_profile_has_photo(false);
+        ui.set_profile_photo(Default::default());
+        ui.set_profile_gifts(Default::default());
+        ui.set_profile_next(Default::default());
+        ui.set_profile_status("Загрузка профиля…".into());
+        ui.set_profile_busy(true);
+        state
+            .bridge
+            .profile(key.as_str(), ui.global::<Theme>().get_show_gifts(), None);
+    });
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_more_gifts(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        if !ui.get_profile_open()
+            || ui.get_profile_busy()
+            || ui.get_profile_next().is_empty()
+            || !ui.global::<Theme>().get_show_gifts()
+        {
+            return;
+        }
+        ui.set_profile_busy(true);
+        state.borrow_mut().bridge.profile(
+            ui.get_profile_key().as_str(),
+            true,
+            Some(ui.get_profile_next().to_string()),
+        );
+    });
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_profile_action(move |action| {
+        let Some(ui) = weak.upgrade() else { return };
+        if ui.get_auth_required() || !ui.get_profile_open() {
+            return;
+        }
+        let key = ui.get_profile_key();
+        let mut state = state.borrow_mut();
+        if action == "message" {
+            ui.set_profile_open(false);
+            if let Some(id) = key
+                .strip_prefix("chat:")
+                .and_then(|s| s.parse::<i32>().ok())
+            {
+                state.open(&ui, id);
+            } else {
+                state.bridge.profile_message(key.as_str());
+            }
+        } else if action == "mute" && ui.get_profile_mute_ready() && !ui.get_profile_action_busy() {
+            ui.set_profile_action_busy(true);
+            state
+                .bridge
+                .profile_mute(key.as_str(), !ui.get_profile_muted());
+        }
+    });
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_profile_photo_requested(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        if !ui.get_profile_has_photo() {
+            return;
+        }
+        {
+            let mut state = state.borrow_mut();
+            state.viewed_photo = None;
+            state.bridge.profile_photo(ui.get_profile_key().as_str());
+        }
+        ui.set_photo_from_profile(true);
+        ui.set_profile_open(false);
+        ui.set_photo_title(ui.get_profile_name());
+        ui.set_photo_image(ui.get_profile_photo());
+        ui.set_photo_zoom(1.0);
+        ui.set_photo_index(1);
+        ui.set_photo_count(1);
+        ui.set_photo_status("Загрузка фото…".into());
+        ui.set_photo_open(true);
+        ui.invoke_focus_photo();
+    });
 
     demo.borrow().refresh_chats(&ui);
     demo.borrow().refresh_history(&ui);
@@ -1321,16 +1763,20 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
     ui.on_request_details(move |mid| {
-        let Some(_ui) = weak.upgrade() else { return };
+        let Some(ui) = weak.upgrade() else { return };
         let mut state = state.borrow_mut();
-        if !state.live_mode || mid <= 0 {
+        if !state.live_mode
+            || mid <= 0
+            || !ui.get_window_visible()
+            || ui.get_auth_required()
+            || !ui.get_conversation_visible()
+        {
             return;
         }
         let Some(chat) = state.chats.get(state.active) else {
             return;
         };
         let peer = chat.row.id;
-        details::resolve_local(&chat.messages, &chat.row.title);
         let Some(row) = chat.messages.iter().find(|row| row.id == mid) else {
             return;
         };
@@ -1375,35 +1821,6 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.invoke_focus_composer();
         }
     });
-    let weak = ui.as_weak();
-    ui.on_preview_file(move || {
-        let Some(ui) = weak.upgrade() else { return };
-        let path = ui.get_file_path().to_string();
-        ui.set_file_preview_error(Default::default());
-        let weak = ui.as_weak();
-        std::thread::spawn(move || {
-            let preview = details::file_preview(&path);
-            let _ = weak.upgrade_in_event_loop(move |ui| {
-                if ui.get_file_path() != path {
-                    return;
-                }
-                match preview {
-                    Ok(Some(pixels)) => {
-                        ui.set_file_preview(slint_image(&pixels));
-                        ui.set_has_file_preview(true);
-                    }
-                    Ok(None) => {
-                        ui.set_has_file_preview(false);
-                    }
-                    Err(error) => {
-                        ui.set_has_file_preview(false);
-                        ui.set_file_preview_error(error.into());
-                    }
-                }
-            });
-        });
-    });
-
     let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
     ui.on_open_chat(move |id| {
         if let Some(ui) = weak.upgrade() {
@@ -1464,21 +1881,89 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.on_send_file(move || {
         let Some(ui) = weak.upgrade() else { return };
         let mut state = state.borrow_mut();
-        if !state.live_mode || ui.get_message_busy() || ui.get_file_path().trim().is_empty() {
+        if !state.live_mode
+            || ui.get_message_busy()
+            || ui.get_attachment_pending() > 0
+            || !ui.get_chat_can_write()
+            || ui.get_attachments().row_count() == 0
+        {
             return;
         }
         let Some(id) = state.chats.get(state.active).map(|c| c.row.id) else {
             return;
         };
         ui.set_message_busy(true);
+        ui.set_upload_busy(true);
         ui.set_file_open(false);
         ui.set_network_status("Загрузка файла…".into());
-        state.bridge.send_file(
+        state.bridge.send_files(
             id,
-            ui.get_file_path().as_str(),
-            ui.get_draft().as_str(),
+            ui.get_attachments()
+                .iter()
+                .map(|r| std::path::PathBuf::from(r.path.as_str()))
+                .collect(),
+            ui.get_attachment_caption().as_str(),
             (ui.get_reply_message() > 0).then(|| ui.get_reply_message()),
         );
+    });
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_editor_history(move |action| {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut state = state.borrow_mut();
+        let active = state.active;
+        if let Some(chat) = state.chats.get_mut(active) {
+            chat.editor_history
+                .action(action.as_str(), &mut chat.formatted_draft);
+            chat.draft = chat.formatted_draft.text.clone().into();
+            if action != "begin" {
+                ui.set_draft(chat.draft.clone());
+            }
+            composer::preview(&ui, &chat.formatted_draft);
+            chat.editor_history.sync(&ui);
+        }
+    });
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_draft_edited(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut state = state.borrow_mut();
+        let active = state.active;
+        if let Some(chat) = state.chats.get_mut(active) {
+            chat.editor_history.record(&chat.formatted_draft);
+            chat.formatted_draft.edit(ui.get_draft().as_str());
+            chat.draft = ui.get_draft();
+            composer::preview(&ui, &chat.formatted_draft);
+            chat.editor_history.sync(&ui);
+        }
+    });
+    let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
+    ui.on_format_editor(move |kind, start, end| {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut state = state.borrow_mut();
+        if ui.get_auth_required()
+            || !ui.get_chat_can_write()
+            || ui.get_message_busy() && !ui.get_text_send_pending()
+        {
+            return;
+        }
+        let active = state.active;
+        if let Some(chat) = state.chats.get_mut(active) {
+            chat.editor_history.record(&chat.formatted_draft);
+            chat.formatted_draft.edit(ui.get_draft().as_str());
+            if chat.formatted_draft.toggle(
+                kind.as_str(),
+                start.max(0) as usize,
+                end.max(0) as usize,
+                ui.get_editor_link().as_str(),
+            ) {
+                composer::preview(&ui, &chat.formatted_draft);
+                chat.editor_history.sync(&ui);
+            } else {
+                ui.set_network_status(
+                    "Выделите текст для форматирования; для ссылки укажите полный URL.".into(),
+                );
+            }
+        }
+        ui.invoke_focus_composer();
     });
     let (weak, state) = (ui.as_weak(), Rc::clone(&demo));
     ui.on_load_older(move || {
@@ -1566,6 +2051,18 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui.set_edit_message_id(mid);
                 ui.set_reply_message(0);
                 ui.set_draft(ui.get_selected_body());
+                let active = state.active;
+                let entities = state.chats[active]
+                    .messages
+                    .iter()
+                    .find(|m| m.id == mid)
+                    .map(|m| composer::decode(m.entities_json.as_str()))
+                    .unwrap_or_default();
+                state.chats[active].formatted_draft = composer::Draft {
+                    text: ui.get_draft().to_string(),
+                    entities,
+                };
+                composer::preview(&ui, &state.chats[active].formatted_draft);
                 ui.invoke_focus_composer();
             }
             "delete" if mid > 0 => {

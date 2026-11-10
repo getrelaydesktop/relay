@@ -3,6 +3,9 @@ import { TelegramMotion, Motion, MessageSendMotion, MessageReceiveMotion, PopupR
 import { ListView } from "list-view.slint";
 import { AuthScreen } from "auth.slint";
 import { SettingsHome } from "settings-home.slint";
+import { ProfilePanel, GiftRow, TelegramProfile } from "profile.slint";
+import { GiftDetail } from "gift-detail.slint";
+export { GiftRow, TelegramProfile } from "profile.slint";
 import { Theme, ActionButton, Entry, Composer, IconButton, MenuItem, AvatarFill, BubbleShape, SendingClock } from "theme.slint";
 import "fonts/OpenSans-Regular.ttf";
 import "fonts/OpenSans-SemiBold.ttf";
@@ -11,6 +14,7 @@ export { Theme } from "theme.slint";
 export { TelegramMotion } from "motion.slint";
 
 export struct ChatRow {
+    no-photo: bool,
     presence: string,
     online: bool,
     id: int,
@@ -31,6 +35,8 @@ export struct ChatRow {
 }
 
 export struct MessageRow {
+    sender-key: string,
+    entities-json: string,
     sender: string,
     reply-author: string,
     reply-body: string,
@@ -66,6 +72,8 @@ export struct FolderRow {
     title: string,
     unread: int,
 }
+
+export struct AttachmentRow { path: string, name: string, size: string }
 
 component Avatar inherits Rectangle {
     in property <string> initials;
@@ -291,13 +299,14 @@ component Bubble inherits Rectangle {
     property <string> display-text: root.message.is-photo && root.message.body == "Фото" ? "" : root.message.body;
     property <styled-text> display-content: root.display-text == "" ? @markdown("") : root.message.has-formatting ? root.message.formatted-body : @markdown("\{root.display-text}");
     out property <length> quote-height: root.message.reply-to > 0 ? 44px : 0px;
+    property <length> author-height: !root.outgoing && root.group-start && root.message.sender != "" ? 20px : 0px;
     property <length> photo-height: root.message.is-photo ? clamp((root.body-width - 16px) * max(1, root.message.photo-height) / max(1, root.message.photo-width), 100px, 300px) : 0px;
     property <bool> single-line: !root.message.is-photo && measure.preferred-height <= date-measure.preferred-height + 4px && measure.preferred-width + date-width + 34px <= available-width;
     property <length> body-width: min(max(max(measure.preferred-width + (single-line ? date-width + 34px : 22px), date-width + 34px), max(root.message.is-photo ? 300px : 0px, root.message.reply-to > 0 ? min(320px, quote-measure.preferred-width + 34px) : 0px)), root.available-width);
     property <length> tail-width: root.group-end && Theme.design == 0 ? 6px : 0px;
     property <length> left-pad: !root.outgoing && root.group-end && Theme.design == 0 ? 6px : 0px;
     width: root.body-width + root.tail-width;
-    height: max(35px, (root.display-text == "" ? 0px : body.preferred-height) + 16px + (single-line ? 0px : 16px) + root.quote-height + root.photo-height);
+    height: root.author-height + max(35px, (root.display-text == "" ? 0px : body.preferred-height) + 16px + (single-line ? 0px : 16px) + root.quote-height + root.photo-height);
     background: transparent;
     BubbleShape {
         opacity: root.sending-mix;
@@ -318,14 +327,14 @@ component Bubble inherits Rectangle {
     quote-measure := Text { visible: false; text: root.message.reply-author + "\n" + root.message.reply-body; font-size: 13px; }
     Rectangle { x: 0px; y: 0px; width: parent.width; height: parent.height; border-radius: 8px; background: Theme.accent.transparentize(0.75); opacity: focus-motion.value; }
     if root.message.reply-to > 0 : Rectangle {
-        x: root.left-pad + 8px; y: 6px; width: root.body-width - 16px; height: 38px;
+        x: root.left-pad + 8px; y: 6px + root.author-height; width: root.body-width - 16px; height: 38px;
         border-radius: 4px; background: Theme.accent.transparentize(0.9); opacity: root.sending-mix;
         Rectangle { x: 1px; y: 1px; width: 2px; height: 36px; background: root.outgoing ? Theme.outgoing-check : Theme.accent; border-radius: 1px; }
         Text { x: 10px; y: 0px; width: parent.width - 15px; height: 19px; text: root.message.reply-author != "" ? root.message.reply-author : "Ответ на сообщение"; font-size: 13px; font-weight: 600; color: root.outgoing ? Theme.outgoing-check : Theme.accent; overflow: elide; }
         Text { x: 10px; y: 19px; width: parent.width - 15px; height: 19px; text: root.message.reply-body != "" ? root.message.reply-body : "Загрузка сообщения…"; font-size: 13px; color: Theme.ink; overflow: elide; }
     }
     if root.message.is-photo : Rectangle {
-        x: root.left-pad + 8px; y: 8px + root.quote-height; width: root.body-width - 16px; height: root.photo-height;
+        x: root.left-pad + 8px; y: 8px + root.quote-height + root.author-height; width: root.body-width - 16px; height: root.photo-height;
         border-radius: 6px; clip: true; background: Theme.canvas;
         if root.message.has-preview : Image { width: parent.width; height: parent.height; source: root.message.preview; image-fit: contain; }
         if !root.message.has-preview : Text { width: parent.width; height: parent.height; text: root.message.preview-failed ? "Открыть фото" : "Загрузка фото…"; color: Theme.muted; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
@@ -337,7 +346,7 @@ component Bubble inherits Rectangle {
     }
     body := StyledText {
         x: root.left-pad + 11px;
-        y: 8px + root.quote-height + root.photo-height;
+        y: 8px + root.quote-height + root.photo-height + root.author-height;
         width: max(1px, root.body-width - 22px - (root.single-line ? root.date-width + 12px : 0px));
         height: self.preferred-height;
         text: root.display-content;
@@ -402,7 +411,7 @@ component Bubble inherits Rectangle {
         }
     }
     if root.message.is-photo : TouchArea {
-        x: root.left-pad + 8px; y: 8px + root.quote-height;
+        x: root.left-pad + 8px; y: 8px + root.quote-height + root.author-height;
         width: root.body-width - 16px; height: root.photo-height;
         enabled: !root.flight-running; mouse-cursor: pointer;
         clicked => { if root.message.failed { root.retry-requested(); } else { root.photo-requested(); } }
@@ -413,14 +422,80 @@ component Bubble inherits Rectangle {
         }
     }
     if root.message.reply-to > 0 : TouchArea {
-        x: root.left-pad + 8px; y: 6px; width: root.body-width - 16px; height: 38px;
+        x: root.left-pad + 8px; y: 6px + root.author-height; width: root.body-width - 16px; height: 38px;
         enabled: !root.flight-running; mouse-cursor: pointer;
         clicked => { root.reply-requested(); }
         pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { root.selected(self.x + self.mouse-x, self.y + self.mouse-y); } }
     }
+    if root.author-height > 0px : Rectangle {
+        x: root.left-pad + 11px; y: 5px; width: root.body-width - 22px; height: 20px;
+        Text { width: parent.width; height: parent.height; text: root.message.sender; color: Theme.accent; font-size: 13px; font-weight: 600; overflow: elide; }
+        TouchArea { width: parent.width; height: parent.height; mouse-cursor: pointer; clicked => { Theme.open-profile(root.message.sender-key); } }
+    }
 }
 
 export component Desktop inherits Window {
+    in-out property <bool> profile-open;
+    in-out property <string> profile-key;
+    in-out property <string> profile-name;
+    in-out property <string> profile-initials;
+    in-out property <string> profile-presence;
+    in-out property <bool> profile-is-user;
+    in-out property <bool> profile-is-self;
+    in-out property <bool> profile-is-bot;
+    in-out property <bool> profile-online;
+    in-out property <string> profile-birthday;
+    in-out property <bool> profile-muted;
+    in-out property <bool> profile-mute-ready;
+    in-out property <bool> profile-action-busy;
+    in-out property <string> profile-gifts-status;
+    in-out property <string> profile-link;
+    in-out property <string> profile-qr-matrix;
+    in-out property <length> profile-scroll-y <=> profile-panel.scroll-y;
+    out property <length> profile-header-y: profile-panel.header-y;
+    out property <int> profile-gift-columns: profile-panel.gift-columns;
+    out property <length> profile-gift-width: profile-panel.gift-width;
+    out property <int> profile-first-gift: profile-panel.first-gift;
+    out property <int> profile-last-gift: profile-panel.last-gift;
+    out property <bool> profile-qr-open: profile-panel.qr-shown;
+    in-out property <bool> gift-open: false;
+    in-out property <int> selected-gift-index: -1;
+    private property <GiftRow> empty-gift;
+    private property <image> empty-image;
+    out property <GiftRow> selected-gift: root.gift-open && root.selected-gift-index >= 0 && root.selected-gift-index < root.profile-gifts.length ? root.profile-gifts[root.selected-gift-index] : root.empty-gift;
+    out property <length> gift-dialog-height: gift-detail.height;
+    out property <length> gift-dialog-width: gift-detail.width;
+    out property <length> profile-header-height: profile-panel.header-height;
+    in-out property <bool> photo-from-profile;
+    callback profile-action(string);
+    in-out property <string> profile-username;
+    in-out property <string> profile-phone;
+    in-out property <string> profile-about;
+    in-out property <image> profile-photo;
+    in-out property <bool> profile-has-photo;
+    in-out property <[GiftRow]> profile-gifts;
+    in-out property <string> profile-status;
+    in-out property <string> profile-next;
+    in-out property <bool> profile-busy;
+    in-out property <image> user-avatar;
+    in-out property <bool> user-has-avatar;
+    callback more-gifts();
+    callback profile-photo-requested();
+    in-out property <bool> large-editor-open;
+    in-out property <bool> large-editor-dismissed;
+    in-out property <string> editor-saved-text;
+    callback editor-history(string);
+    in property <bool> editor-can-undo;
+    in property <bool> editor-can-redo;
+    // Growing text stays in the composer; expanding the editor is explicit.
+    public function expand-composer() {
+        root.editor-saved-text = root.draft;
+        root.editor-history("begin");
+        root.large-editor-open = true;
+        large-composer.focus();
+    }
+    property <length> block-hint-height: root.has-chat && root.active-chat.no-photo && root.active-chat.presence == "был(а) очень давно" && root.block-hint-dismissed != root.active-chat.id ? 74px : 0px;
+    in-out property <int> block-hint-dismissed: -1;
     title: "Relay Desktop";
     no-frame: true;
     default-font-family: "Open Sans";
@@ -478,9 +553,35 @@ export component Desktop inherits Window {
     in-out property <string> file-preview-error;
     in-out property <int> edit-message-id: 0;
     in-out property <bool> file-open: false;
+    in-out property <[AttachmentRow]> attachments;
+    in-out property <string> attachment-caption;
+    in-out property <bool> picker-busy;
+    in-out property <int> attachment-generation;
+    in-out property <int> attachment-pending;
+    private property <int> attachment-chat-id: root.active-chat.id;
+    changed attachment-chat-id => { root.cancel-attachments(); }
+    public function cancel-attachments() {
+        root.invalidate-file-preview(); root.file-preview = root.empty-image; root.has-file-preview = false;
+        root.attachment-generation += 1; root.attachment-pending = 0;
+        root.file-open = false; root.attachments = []; root.file-path = "";
+        root.attachment-caption = ""; root.file-preview-error = "";
+    }
+    in-out property <bool> upload-busy;
+    in-out property <bool> file-drag-hover;
+    in-out property <bool> editor-menu-open;
+    in-out property <bool> draft-has-formatting;
+    in-out property <styled-text> draft-preview;
+    in-out property <int> format-count;
+    in-out property <bool> link-editor-open;
+    in-out property <string> editor-link;
+    in-out property <int> format-selection-start;
+    in-out property <int> format-selection-end;
     in-out property <string> file-path: "";
-    changed file-path => { root.has-file-preview = false; file-preview-timer.restart(); }
-    file-preview-timer := Timer { running: false; interval: 250ms; triggered => { root.preview-file(); } }
+    changed file-path => {
+        root.file-preview = root.empty-image; root.has-file-preview = false;
+        root.invalidate-file-preview(); file-preview-timer.start(); file-preview-timer.restart();
+    }
+    file-preview-timer := Timer { running: false; interval: 250ms; triggered => { self.stop(); root.preview-file(); } }
     in-out property <bool> chat-search-open: false;
     in-out property <string> chat-query: "";
     in-out property <bool> confirm-delete: false;
@@ -501,28 +602,70 @@ export component Desktop inherits Window {
     callback auth-logout();
 
     callback open-chat(int);
+    callback pick-files();
+    callback remove-attachment(int);
+    callback draft-edited();
+    callback format-editor(string, int, int);
     callback request-avatar(int);
     callback request-details(int);
+    callback detail-visibility(int, bool);
     callback jump-reply(int);
     callback cancel-reply();
     callback network-events();
     callback preview-file();
+    callback invalidate-file-preview();
+    callback media-state-changed();
+    callback clear-raster-cache();
+    callback request-gift-media();
     in-out property <bool> window-visible: true;
+    private property <bool> gifts-enabled: Theme.show-gifts;
+    changed profile-open => { if !root.profile-open { root.gift-open = false; } root.schedule-media-release(); }
+    changed photo-open => { root.schedule-media-release(); }
+    changed photo-from-profile => { root.schedule-media-release(); }
+    changed file-open => {
+        root.invalidate-file-preview();
+        if root.file-open { file-preview-timer.start(); file-preview-timer.restart(); }
+        root.schedule-media-release();
+    }
+    changed attachment-generation => { root.invalidate-file-preview(); root.schedule-media-release(); }
+    changed window-visible => { root.schedule-media-release(); }
+    changed auth-step => { root.schedule-media-release(); }
+    changed auth-qr-matrix => { root.schedule-media-release(); }
+    changed profile-qr-open => { root.schedule-media-release(); }
+    changed gifts-enabled => { if !root.gifts-enabled { root.gift-open = false; } root.schedule-media-release(); root.schedule-gift-media(); }
+    changed gift-open => { if !root.gift-open { root.selected-gift-index = -1; } root.schedule-media-release(); root.schedule-gift-media(); }
+    changed selected-gift-index => { root.schedule-gift-media(); }
+    changed profile-first-gift => { root.schedule-gift-media(); }
+    changed profile-last-gift => { root.schedule-gift-media(); }
+    function schedule-media-release() { media-life.start(); media-life.restart(); }
+    media-life := Timer { running: false; interval: 0ms; triggered => { self.stop(); root.media-state-changed(); } }
+    function schedule-gift-media() { gift-media-scan.start(); gift-media-scan.restart(); }
+    gift-media-scan := Timer { running: false; interval: 50ms; triggered => { self.stop(); root.request-gift-media(); } }
     out property <bool> conversation-visible: root.window-visible && root.has-chat && (!root.compact || root.show-chat);
     private property <int> details-generation: 0;
-    changed history-scroll-y => { details-scan.restart(); }
-    changed window-visible => { details-scan.restart(); }
-    details-scan := Timer { running: false; interval: 80ms; triggered => { root.details-generation += 1; } }
+    changed history-scroll-y => { root.schedule-details(); }
+    changed conversation-visible => { root.schedule-details(); root.schedule-media-release(); }
+    changed auth-required => { root.schedule-details(); root.schedule-media-release(); if root.auth-required { root.cancel-attachments(); root.profile-open = false; root.photo-from-profile = false; root.photo-open = false; } }
+    // Slint restart() alone cannot initialize a stopped, never-started timer.
+    // Start explicitly and debounce; stop after the single viewport scan.
+    function schedule-details() { details-scan.start(); details-scan.restart(); }
+    details-scan := Timer {
+        running: false;
+        interval: 80ms;
+        triggered => { self.stop(); root.details-generation += 1; }
+    }
     private property <int> jump-target;
     private property <int> jump-generation;
-    property <length> composer-extra: root.reply-message > 0 || root.edit-message-id > 0 ? 50px : 0px;
+    property <length> reply-extra: root.reply-message > 0 || root.edit-message-id > 0 ? 50px : 0px;
+    property <length> format-preview-height: root.draft-has-formatting ? 76px : 0px;
+    property <length> composer-extra: root.reply-extra + root.format-preview-height;
     out property <length> composer-height: root.chat-can-write ? composer.content-height : 46px;
     callback select-folder(int);
     callback view-photo(int);
     callback step-photo(int);
     callback save-photo();
     callback join-channel();
-    property <bool> chat-can-write: root.active-chat.channel-access == 0 || root.active-chat.channel-access == 2;
+    out property <bool> chat-can-write: root.active-chat.channel-access == 0 || root.active-chat.channel-access == 2;
     callback send-message();
     callback retry-message(int);
     callback send-file();
@@ -534,10 +677,13 @@ export component Desktop inherits Window {
     callback open-first-result();
     callback query-edited();
     callback settings-changed();
+    callback folders-requested();
     callback minimize-window();
     callback maximize-window();
     callback close-window();
     callback drag-window();
+    callback suspend-ui();
+    callback resume-ui();
     callback resize-window();
 
     property <bool> compact: root.width < 740px;
@@ -828,6 +974,12 @@ export component Desktop inherits Window {
                 }
             }
 
+            if root.block-hint-height > 0px : Rectangle {
+                y: 54px; width: parent.width; height: root.block-hint-height; background: Theme.surface;
+                Text { x: 16px; y: 8px; width: parent.width - 62px; text: "Возможна блокировка"; color: Theme.accent; font-size: 13px; font-weight: 600; }
+                Text { x: 16px; y: 29px; width: parent.width - 62px; text: "Нет фото, статус «был(а) очень давно». Это также бывает из-за приватности. Можно переключиться на другие чаты."; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                IconButton { x: parent.width - 44px; y: 12px; icon: "close"; label: "Скрыть подсказку"; clicked => { root.block-hint-dismissed = root.active-chat.id; } }
+            }
             header := Rectangle {
                 x: 0px;
                 y: 0px;
@@ -865,6 +1017,7 @@ export component Desktop inherits Window {
                     vertical-alignment: center;
                     overflow: elide;
                 }
+                TouchArea { x: root.compact ? 54px : 12px; width: max(1px, parent.width - self.x - 180px); height: parent.height; mouse-cursor: pointer; clicked => { Theme.open-profile(root.active-chat.id == 3 ? "self" : "chat:" + root.active-chat.id); } }
                 IconButton {
                     x: parent.width - 172px;
                     y: 7px;
@@ -927,13 +1080,13 @@ export component Desktop inherits Window {
                     icon: "clip";
                     label: "Send a file";
                     visible: root.chat-can-write;
-                    enabled: root.connected && !root.message-busy && root.edit-message-id == 0;
-                    clicked => { root.file-open = true; }
+                    enabled: !root.picker-busy && !root.message-busy && root.edit-message-id == 0;
+                    clicked => { root.pick-files(); }
                 }
                 composer := Composer {
                     x: 46px;
                     y: 0px;
-                    width: parent.width - 134px;
+                    width: parent.width - 174px;
                     height: parent.height;
                     text <=> root.draft;
                     placeholder-visible: !root.follow-sending;
@@ -941,6 +1094,13 @@ export component Desktop inherits Window {
                     read-only: root.message-busy && !root.text-send-pending;
                     placeholder: root.edit-message-id > 0 ? "Edit message..." : root.reply-message > 0 ? "Reply..." : root.active-chat.channel-access == 2 ? "Опубликовать запись…" : "Write a message...";
                     accepted => { root.send-message(); }
+                    edited => { root.draft-edited(); }
+                    format-requested(kind, start, end) => { root.format-selection-start = start; root.format-selection-end = end; root.format-editor(kind, start, end); }
+                }
+                Rectangle {
+                    x: parent.width - 126px; y: parent.height - 43px; width: 40px; height: 40px;
+                    Text { width: parent.width; height: parent.height; text: "Aa"; font-size: 15px; font-weight: 600; color: root.draft-has-formatting ? Theme.accent : Theme.icon-fg; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { width: parent.width; height: parent.height; mouse-cursor: pointer; clicked => { root.format-selection-start = composer.selection-start; root.format-selection-end = composer.selection-end; root.editor-menu-open = !root.editor-menu-open; } }
                 }
                 IconButton {
                     x: parent.width - 86px;
@@ -982,9 +1142,9 @@ export component Desktop inherits Window {
             }
 
             history-mask := Rectangle {
-                y: 54px;
+                y: 54px + root.block-hint-height;
                 width: parent.width - (root.compact ? 0px : 292px * root.emoji-progress);
-                height: parent.height - 54px;
+                height: parent.height - self.y;
                 clip: true;
                 history := Flickable {
                     x: 0px;
@@ -998,8 +1158,9 @@ export component Desktop inherits Window {
                     visible: root.has-chat;
                     viewport-width: self.width;
                     viewport-height: content-height + flight-padding;
+                    changed view-height => { root.schedule-details(); }
                     changed viewport-height => {
-                        details-scan.restart();
+                        root.schedule-details();
                         if root.follow-sending || root.follow-incoming { root.scroll-to-bottom(); }
                     }
                     history-items := VerticalLayout {
@@ -1010,20 +1171,29 @@ export component Desktop inherits Window {
                         spacing: 0px;
                         for message[index] in root.messages : Rectangle {
                             property <int> scanned-generation: -1;
-                            property <string> detail-key: message.photo-key;
+                            property <bool> needs-details: message.id > 0
+                                && ((message.is-photo && !message.has-preview && !message.preview-failed)
+                                    || (message.reply-to > 0 && !message.reply-resolved));
+                            property <string> detail-key: "\{message.id}/\{message.reply-to}/\{message.photo-key}";
                             changed detail-key => { self.scanned-generation = -1; }
-                            // Read row geometry after layout, never while the
-                            // repeater is constructing its own layout delegates.
+                            changed needs-details => { if self.needs-details { self.scanned-generation = -1; } }
+                            property <int> media-state: -1;
+                            property <bool> media-visible: root.conversation-visible && !root.auth-required
+                                && history-items.y + self.y + history.viewport-y < history.view-height + 150px
+                                && history-items.y + self.y + history.viewport-y + self.height > -150px;
+                            // Read geometry and evict images after layout. Already
+                            // resolved photos must also report leaving the viewport.
                             Timer {
-                                running: parent.scanned-generation != root.details-generation;
+                                running: message.id > 0 && ((message.is-photo && parent.media-state != (parent.media-visible ? 1 : 0))
+                                    || (parent.needs-details && parent.media-visible && parent.scanned-generation != root.details-generation));
                                 interval: 1ms;
                                 triggered => {
                                     parent.scanned-generation = root.details-generation;
-                                    if root.conversation-visible && !root.auth-required
-                                        && history-items.y + parent.y + history.viewport-y < history.view-height + 150px
-                                        && history-items.y + parent.y + history.viewport-y + parent.height > -150px {
-                                        root.request-details(message.id);
+                                    if message.is-photo && parent.media-state != (parent.media-visible ? 1 : 0) {
+                                        parent.media-state = parent.media-visible ? 1 : 0;
+                                        root.detail-visibility(message.id, parent.media-visible);
                                     }
+                                    if parent.media-visible && parent.needs-details { root.request-details(message.id); }
                                 }
                             }
                             property <int> focus-token: root.jump-target == message.id ? root.jump-generation : 0;
@@ -1033,8 +1203,8 @@ export component Desktop inherits Window {
                             sending := MessageSendMotion { token: message.send-token; }
                             receiving := MessageReceiveMotion { token: message.receive-token; }
                             property <bool> date-start: index == 0 || root.messages[index - 1].date != message.date;
-                            property <bool> group-start: date-start || root.messages[index - 1].outgoing != message.outgoing || root.messages[index - 1].service;
-                            property <bool> group-end: index + 1 == root.messages.length || root.messages[index + 1].outgoing != message.outgoing || root.messages[index + 1].date != message.date || root.messages[index + 1].service;
+                            property <bool> group-start: date-start || root.messages[index - 1].sender-key != message.sender-key || root.messages[index - 1].sender != message.sender || root.messages[index - 1].outgoing != message.outgoing || root.messages[index - 1].service;
+                            property <bool> group-end: index + 1 == root.messages.length || root.messages[index + 1].sender-key != message.sender-key || root.messages[index + 1].sender != message.sender || root.messages[index + 1].outgoing != message.outgoing || root.messages[index + 1].date != message.date || root.messages[index + 1].service;
                             property <length> top-offset: date-start ? 40px : (group-start ? 6px : 0px);
                             property <length> bottom-pad: index + 1 == root.messages.length ? 8px : 2px;
                             property <length> edge-pad: group-end && Theme.design == 0 ? 10px : 16px;
@@ -1044,6 +1214,10 @@ export component Desktop inherits Window {
                             property <length> final-y: history-items.y + self.y + history.viewport-y + top-offset - hidden-height;
                             width: history.width;
                             height: final-height - hidden-height;
+                            // A rectangular clip lets Skia skip entire offscreen
+                            // subtrees, not just their individual drawing commands.
+                            // Flying/revealing bubbles must still overflow the row.
+                            clip: sending.progress >= 1 && receiving.progress >= 1;
                             if date-start : Rectangle {
                                 opacity: sending.mix;
                                 x: (parent.width - self.width) / 2;
@@ -1139,14 +1313,22 @@ export component Desktop inherits Window {
                 background: Theme.dark ? #7f84897a : #7f84894c;
                 border-radius: 2px;
             }
-            if root.composer-extra > 0px : Rectangle {
-                x: 0px; y: parent.height - root.composer-height - root.composer-extra; width: history.width; height: root.composer-extra;
+            if root.reply-extra > 0px : Rectangle {
+                x: 0px; y: parent.height - root.composer-height - root.composer-extra; width: history.width; height: root.reply-extra;
                 background: Theme.surface;
                 Rectangle { x: 48px; y: 5px; width: 3px; height: 40px; background: Theme.accent; }
                 Text { x: 61px; y: 5px; width: parent.width - 110px; height: 18px; text: root.edit-message-id > 0 ? "Редактирование" : "Ответ: " + root.reply-author; color: Theme.accent; font-size: 13px; font-weight: 600; overflow: elide; }
                 Text { x: 61px; y: 24px; width: parent.width - 110px; height: 19px; text: root.edit-message-id > 0 ? root.selected-body : root.reply-body; color: Theme.muted; font-size: 13px; overflow: elide; }
                 TouchArea { x: 48px; y: 0px; width: parent.width - 96px; height: parent.height; mouse-cursor: pointer; clicked => { if root.reply-message > 0 { root.reveal-message(root.reply-message); } } }
                 IconButton { x: parent.width - 44px; y: 5px; icon: "close"; label: "Отменить ответ"; clicked => { root.cancel-reply(); } }
+            }
+            if root.draft-has-formatting : Rectangle {
+                x: 0px; y: parent.height - root.composer-height - root.format-preview-height; width: history.width; height: root.format-preview-height;
+                background: Theme.surface;
+                Text { x: 16px; y: 4px; text: "Предпросмотр форматирования"; font-size: 11px; color: Theme.accent; }
+                Flickable { x: 16px; y: 24px; width: parent.width - 32px; height: 46px; viewport-width: self.width; viewport-height: preview.preferred-height;
+                    preview := StyledText { width: parent.width; height: self.preferred-height; text: root.draft-preview; default-font-family: "Open Sans"; default-font-size: 13px; default-color: Theme.ink; link-color: Theme.accent; }
+                }
             }
 
             if root.chat-search-open : Rectangle {
@@ -1291,6 +1473,41 @@ export component Desktop inherits Window {
         }
     }
 
+    BoxOverlay {
+        shown: root.profile-open && !root.auth-required; width: root.width; height: root.height;
+        // Keep the native 26px caption interactive while this modal is open.
+        TouchArea { y: 26px; width: parent.width; height: parent.height - 26px; clicked => { root.profile-open = false; } }
+        profile-panel := ProfilePanel {
+            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            width: min(TelegramProfile.desired-width, max(TelegramProfile.minimum-width, parent.width - 96px)); height: parent.height - 80px;
+            shown: root.profile-open; profile-key: root.profile-key;
+            is-user: root.profile-is-user; is-self: root.profile-is-self; is-bot: root.profile-is-bot;
+            online: root.profile-online; birthday: root.profile-birthday;
+            muted: root.profile-muted; action-busy: root.profile-action-busy || !root.profile-mute-ready;
+            qr-matrix: root.profile-qr-matrix; profile-link: root.profile-link;
+            name: root.profile-name; initials: root.profile-initials; presence: root.profile-presence;
+            username: root.profile-username; phone: root.profile-phone; about: root.profile-about;
+            photo: root.profile-photo; has-photo: root.profile-has-photo;
+            gifts: root.profile-gifts; status: root.profile-status; gifts-status: root.profile-gifts-status;
+            more: root.profile-next != ""; busy: root.profile-busy;
+            action(kind) => { root.profile-action(kind); }
+            closed => { root.profile-open = false; }
+            view-photo => { root.profile-photo-requested(); }
+            load-more => { root.more-gifts(); }
+            gift-selected(index) => { root.open-gift(index); }
+        }
+    }
+    BoxOverlay {
+        shown: root.gift-open && root.profile-open && !root.auth-required;
+        width: root.width; height: root.height;
+        TouchArea { y: 26px; width: parent.width; height: parent.height - 26px; clicked => { root.close-gift(); } }
+        gift-detail := GiftDetail {
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: min(364px, parent.width - 32px); available-height: parent.height - 80px;
+            gift: root.selected-gift; active: root.gift-open && root.profile-open && !root.auth-required;
+            closed => { root.close-gift(); }
+        }
+    }
     if !root.auth-required && root.network-status != "" : Rectangle {
         x: root.chat-left + 8px; y: 36px;
         width: max(250px, root.width - root.chat-left - 16px); height: 44px;
@@ -1299,6 +1516,89 @@ export component Desktop inherits Window {
         IconButton { x: parent.width - 40px; y: 2px; icon: "close"; label: "Dismiss"; clicked => { root.network-status = ""; } }
     }
 
+    Rectangle {
+        visible: root.large-editor-open && !root.auth-required;
+        y: 26px; width: root.width; height: root.height - 26px; background: Theme.surface;
+        Rectangle {
+            x: 12px; y: 12px; width: 82px; height: 40px; border-radius: 22px; border-width: 1px; border-color: Theme.border;
+            ActionButton { x: 0px; width: 40px; height: 40px; text: "↶"; enabled: root.editor-can-undo; clicked => { root.editor-history("undo"); large-composer.focus(); } }
+            ActionButton { x: 40px; width: 40px; height: 40px; text: "↷"; enabled: root.editor-can-redo; clicked => { root.editor-history("redo"); large-composer.focus(); } }
+        }
+        Flickable {
+            x: 106px; y: 12px; width: parent.width - 118px; height: 44px; viewport-width: 358px; viewport-height: 44px;
+            Rectangle {
+                width: 350px; height: 40px; border-radius: 22px; border-width: 1px; border-color: Theme.border;
+                for label[index] in ["Aa", "B", "I", "U", "≡", "↗", "⌘", "☺"] : ActionButton {
+                    x: 4px + index * 43px; width: 41px; height: 38px; text: label;
+                    clicked => {
+                        root.format-selection-start = large-composer.selection-start; root.format-selection-end = large-composer.selection-end;
+                        if index == 0 { root.editor-menu-open = true; }
+                        else if index == 5 { root.editor-link = "https://"; root.link-editor-open = true; }
+                        else if index == 6 { root.pick-files(); }
+                        else if index == 7 { root.draft += "🙂"; root.draft-edited(); large-composer.focus(); }
+                        else { root.format-editor(index == 1 ? "bold" : index == 2 ? "italic" : index == 3 ? "underline" : "quote", root.format-selection-start, root.format-selection-end); large-composer.focus(); }
+                    }
+                }
+            }
+        }
+        large-composer := Composer {
+            x: 14px; y: 64px; width: parent.width - 28px; height: max(60px, parent.height - 144px - (root.draft-has-formatting ? 88px : 0px));
+            text <=> root.draft; placeholder: "Напишите сообщение…"; expanded: true;
+            read-only: root.message-busy && !root.text-send-pending;
+            edited => { root.draft-edited(); }
+            format-requested(kind, start, end) => { root.format-selection-start = start; root.format-selection-end = end; root.format-editor(kind, start, end); }
+        }
+        if root.draft-has-formatting : Rectangle {
+            x: 20px; y: parent.height - 158px; width: parent.width - 40px; height: 84px; border-width: 1px; border-color: Theme.border; border-radius: 8px;
+            Flickable { x: 10px; y: 8px; width: parent.width - 20px; height: parent.height - 16px; viewport-width: self.width; viewport-height: formatted.preferred-height;
+                formatted := StyledText { width: parent.width; height: self.preferred-height; text: root.draft-preview; default-font-size: 13px; default-color: Theme.ink; link-color: Theme.accent; }
+            }
+        }
+        Text { x: 20px; y: parent.height - 46px; text: "Редактор сообщения"; color: Theme.muted; font-size: 12px; }
+        IconButton { x: parent.width - 104px; y: parent.height - 54px; icon: "close"; label: "Отменить изменения"; clicked => { root.editor-history("cancel"); root.large-editor-open = false; root.large-editor-dismissed = true; composer.focus(); } }
+        Rectangle { x: parent.width - 52px; y: parent.height - 54px; width: 40px; height: 40px; border-radius: 20px; background: Theme.accent;
+            Text { width: parent.width; height: parent.height; text: "✓"; color: white; font-size: 25px; horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { width: parent.width; height: parent.height; mouse-cursor: pointer; clicked => { root.large-editor-open = false; root.large-editor-dismissed = true; composer.focus(); } }
+        }
+    }
+    if root.file-drag-hover && root.has-chat && !root.auth-required : Rectangle {
+        x: root.chat-left + 8px; y: 88px; width: root.width - self.x - 8px; height: root.height - 150px;
+        background: Theme.surface.transparentize(0.08); border-width: 2px; border-color: Theme.accent; border-radius: 12px;
+        Text { width: parent.width; height: parent.height; text: "Перетащите файлы сюда\nПеред отправкой появится предпросмотр"; color: Theme.accent; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; }
+    }
+    if root.editor-menu-open : Rectangle {
+        width: root.width; height: root.height;
+        TouchArea { width: parent.width; height: parent.height; clicked => { root.editor-menu-open = false; } }
+        Rectangle {
+            x: max(8px, root.width - 244px); y: max(30px, root.height - root.composer-height - self.height - 6px);
+            width: 232px; height: min(412px, root.height - 64px); background: Theme.surface; border-radius: 8px; border-width: 1px; border-color: Theme.border;
+            Flickable {
+                width: parent.width; height: parent.height;
+                viewport-width: self.width; viewport-height: 412px;
+                for entry[index] in ["Вставить · Ctrl+V", "Копировать · Ctrl+C", "Вырезать · Ctrl+X", "Выделить всё · Ctrl+A", "Жирный · Ctrl+B", "Курсив · Ctrl+I", "Подчёркнутый · Ctrl+U", "Зачёркнутый", "Моноширинный · Ctrl+M", "Добавить ссылку", "Снять форматирование", "Развернуть редактор"] : MenuItem {
+                    x: 0px; y: 2px + index * 34px; width: parent.width; text: entry;
+                    clicked => {
+                        root.editor-menu-open = false;
+                        if index < 4 { root.composer-edit-action(index == 0 ? "paste" : index == 1 ? "copy" : index == 2 ? "cut" : "select-all"); }
+                        else if index == 9 { root.editor-link = "https://"; root.link-editor-open = true; }
+                        else if index == 11 { root.expand-composer(); }
+                        else { root.format-editor(index == 4 ? "bold" : index == 5 ? "italic" : index == 6 ? "underline" : index == 7 ? "strike" : index == 8 ? "code" : "clear", root.format-selection-start, root.format-selection-end); }
+                    }
+                }
+            }
+        }
+    }
+    BoxOverlay {
+        shown: root.link-editor-open; width: root.width; height: root.height;
+        TouchArea { width: parent.width; height: parent.height; }
+        Rectangle {
+            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; width: min(400px, parent.width - 24px); height: 170px; background: Theme.surface; border-radius: 8px;
+            Text { x: 18px; y: 18px; text: "Ссылка для выделенного текста"; color: Theme.ink; font-size: 15px; }
+            Entry { x: 18px; y: 54px; width: parent.width - 36px; height: 40px; text <=> root.editor-link; placeholder: "https://"; }
+            ActionButton { x: 18px; y: 116px; text: "Отмена"; clicked => { root.link-editor-open = false; } }
+            ActionButton { x: parent.width - 130px; y: 116px; text: "Применить"; primary: true; clicked => { root.format-editor("link", root.format-selection-start, root.format-selection-end); root.link-editor-open = false; } }
+        }
+    }
     BoxOverlay {
         shown: root.forward-open && !root.auth-required;
         width: root.width; height: root.height;
@@ -1331,17 +1631,25 @@ export component Desktop inherits Window {
         TouchArea { width: parent.width; height: parent.height; }
         Rectangle {
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-            width: min(480px, parent.width - 24px); height: min(parent.height - 40px, root.has-file-preview ? 510px : 280px);
+            width: min(480px, parent.width - 24px); height: min(parent.height - 40px, root.has-file-preview ? 540px : 330px);
             background: Theme.surface; border-radius: 8px;
             Text { x: 18px; y: 18px; text: "Отправить вложение"; color: Theme.ink; font-size: 17px; }
-            Text { x: 18px; y: 54px; width: parent.width - 36px; text: root.file-preview-error != "" ? root.file-preview-error : "Укажите путь к файлу и добавьте подпись."; color: Theme.muted; wrap: word-wrap; font-size: 13px; }
-            Entry { x: 18px; y: 92px; width: parent.width - 36px; height: 40px; text <=> root.file-path; placeholder: "C:\\Users\\…\\photo.jpg"; accepted => { root.send-file(); } }
-            if root.has-file-preview : Image { x: 18px; y: 140px; width: parent.width - 36px; height: parent.height - 270px; source: root.file-preview; image-fit: contain; }
-            Entry { x: 18px; y: parent.height - 114px; width: parent.width - 36px; height: 40px; text <=> root.draft; placeholder: "Подпись…"; }
+            Text { x: 18px; y: 54px; width: parent.width - 140px; text: root.file-preview-error != "" ? root.file-preview-error : root.attachment-pending > 0 ? "Проверка файлов…" : "Выбрано файлов: " + root.attachments.length; color: Theme.muted; wrap: word-wrap; font-size: 13px; }
+            ActionButton { x: parent.width - 116px; y: 42px; width: 98px; text: "Добавить"; enabled: !root.picker-busy; clicked => { root.pick-files(); } }
+            ListView { x: 18px; y: 88px; width: parent.width - 36px; height: 110px; viewport-width: self.width;
+                for file[index] in root.attachments : Rectangle {
+                    width: parent.width; height: 52px;
+                    Text { x: 0px; y: 4px; width: parent.width - 44px; text: file.name; color: Theme.ink; font-size: 13px; overflow: elide; }
+                    Text { x: 0px; y: 26px; text: file.size; color: Theme.muted; font-size: 12px; }
+                    IconButton { x: parent.width - 40px; y: 4px; icon: "close"; label: "Убрать файл"; clicked => { root.remove-attachment(index); } }
+                }
+            }
+            if root.has-file-preview : Image { x: 18px; y: 204px; width: parent.width - 36px; height: max(0px, parent.height - 326px); source: root.file-preview; image-fit: contain; }
+            Entry { x: 18px; y: parent.height - 114px; width: parent.width - 36px; height: 40px; text <=> root.attachment-caption; placeholder: "Подпись"; }
             HorizontalLayout {
                 x: 18px; y: parent.height - 56px; width: parent.width - 36px; height: 36px; spacing: 12px;
-                ActionButton { text: "Отмена"; clicked => { root.file-open = false; } }
-                ActionButton { text: "Отправить"; primary: true; enabled: root.file-path != "" && !root.message-busy; clicked => { root.send-file(); } }
+                ActionButton { text: "Отмена"; clicked => { root.cancel-attachments(); } }
+                ActionButton { text: "Отправить"; primary: true; enabled: root.attachments.length > 0 && root.attachment-pending == 0 && !root.message-busy; clicked => { root.send-file(); } }
             }
         }
     }
@@ -1525,8 +1833,11 @@ export component Desktop inherits Window {
                 width: 48px;
                 height: 48px;
                 initials: root.user-initials;
+                photo: root.user-avatar;
+                has-photo: root.user-has-avatar;
                 tint-top: #72d5fd;
                 tint: #2a9ef1;
+                TouchArea { width: parent.width; height: parent.height; mouse-cursor: pointer; clicked => { root.menu-open = false; Theme.open-profile("self"); } }
             }
             Text {
                 x: 24px;
@@ -1724,7 +2035,12 @@ export component Desktop inherits Window {
                 user-phone: root.user-phone;
                 user-username: root.user-username;
                 user-initials: root.user-initials;
+                user-avatar: root.user-avatar;
+                user-has-avatar: root.user-has-avatar;
+                profile-requested => { Theme.open-profile("self"); }
+                gifts-changed => { root.settings-changed(); }
                 appearance-requested => { root.settings-page = 1; }
+                folders-requested => { root.settings-open = false; }
                 logout-requested => {
                     root.settings-open = false;
                     root.auth-logout();
@@ -1856,7 +2172,15 @@ export component Desktop inherits Window {
         }
     }
 
-    public function focus-composer() { composer.focus(); }
+    public function composer-menu() {
+        root.format-selection-start = root.large-editor-open ? large-composer.selection-start : composer.selection-start;
+        root.format-selection-end = root.large-editor-open ? large-composer.selection-end : composer.selection-end;
+        root.editor-menu-open = true;
+    }
+    public function composer-edit-action(action: string) {
+        if root.large-editor-open { large-composer.edit-action(action); } else { composer.edit-action(action); }
+    }
+    public function focus-composer() { if root.large-editor-open { large-composer.focus(); } else { composer.focus(); } }
     private property <bool> follow-sending: false;
     private property <bool> follow-incoming: false;
     receive-timer := Timer {
@@ -1889,10 +2213,22 @@ export component Desktop inherits Window {
         photo-viewport.viewport-y = (photo-viewport.height - photo-viewport.viewport-height) / 2;
         photo-keys.focus();
     }
-    function close-photo() {
-        root.photo-open = false;
-        root.photo-status = "";
-        composer.focus();
+    public function open-gift(index: int) {
+        if root.profile-open && !root.auth-required && Theme.show-gifts && index >= 0 && index < root.profile-gifts.length {
+            root.selected-gift-index = index; root.gift-open = true; gift-detail.focus();
+        }
+    }
+    public function close-gift() {
+        root.gift-open = false; root.selected-gift-index = -1;
+        if root.profile-open { profile-panel.focus(); }
+    }
+    public function close-photo() {
+        if root.photo-from-profile {
+            root.profile-photo = root.photo-image; root.profile-has-photo = true; root.profile-open = true;
+            root.photo-from-profile = false; profile-panel.focus();
+        } else { composer.focus(); }
+        root.photo-open = false; root.photo-image = root.empty-image;
+        root.photo-status = ""; root.photo-zoom = 1;
     }
     public function scroll-to-bottom() {
         history.viewport-y = min(0px, history.view-height - history.content-height);

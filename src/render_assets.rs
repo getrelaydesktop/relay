@@ -1,26 +1,29 @@
-use std::collections::HashMap;
-
 use slint::{Color, Image, Rgba8Pixel, SharedPixelBuffer};
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Transform};
 
 pub struct Assets {
-    qr_cache: HashMap<(String, u32, [u8; 4]), Image>,
+    // Keep only the most recently used raster (at most 4 MiB of RGBA pixels).
+    qr_cache: Option<(String, u32, Image)>,
 }
 
 impl Assets {
     pub fn new() -> Self {
-        Self {
-            qr_cache: HashMap::new(),
-        }
+        Self { qr_cache: None }
     }
 
-    pub fn qr_card(&mut self, matrix_str: &str, size_px: u32, accent: Color) -> Image {
-        let size = size_px.max(64);
-        let a_arr = [accent.red(), accent.green(), accent.blue(), accent.alpha()];
-        let key = (matrix_str.to_owned(), size, a_arr);
-        if let Some(cached) = self.qr_cache.get(&key) {
-            return cached.clone();
+    pub fn clear(&mut self) {
+        self.qr_cache = None;
+    }
+
+    pub fn qr_card(&mut self, matrix_str: &str, size_px: u32, _accent: Color) -> Image {
+        let size = size_px.clamp(64, 1024);
+        // Raster colors are fixed, so theme accents do not affect this key.
+        if let Some((matrix, cached_size, cached)) = &self.qr_cache {
+            if matrix == matrix_str && *cached_size == size {
+                return cached.clone();
+            }
         }
+        self.clear();
 
         let mut pixmap = Pixmap::new(size, size).unwrap();
 
@@ -63,7 +66,7 @@ impl Assets {
             }
         }
         let image = pixmap_to_slint(&pixmap);
-        self.qr_cache.insert(key, image.clone());
+        self.qr_cache = Some((matrix_str.to_owned(), size, image.clone()));
         image
     }
 }
@@ -141,4 +144,53 @@ fn pixmap_to_slint(pixmap: &Pixmap) -> Image {
         };
     }
     Image::from_rgba8(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cache_len_bytes(assets: &Assets) -> (usize, usize) {
+        match &assets.qr_cache {
+            Some((_, _, image)) => (1, image.to_rgba8().unwrap().as_bytes().len()),
+            None => (0, 0),
+        }
+    }
+
+    #[test]
+    fn many_distinct_matrices_keep_only_the_last_raster_and_clear_releases_it() {
+        let mut assets = Assets::new();
+        assert_eq!(cache_len_bytes(&assets), (0, 0));
+        for value in 0..256 {
+            let matrix = format!("{value:08b}\n10101010");
+            assets.qr_card(&matrix, 64, Color::default());
+            assert_eq!(cache_len_bytes(&assets), (1, 64 * 64 * 4));
+            assert_eq!(assets.qr_cache.as_ref().unwrap().0, matrix);
+        }
+        assets.clear();
+        assert_eq!(cache_len_bytes(&assets), (0, 0));
+        assets.clear();
+        assert_eq!(cache_len_bytes(&assets), (0, 0));
+    }
+
+    #[test]
+    fn sizes_are_clamped_and_accent_changes_reuse_the_same_pixels() {
+        let mut assets = Assets::new();
+        for (requested, expected) in [(0, 64), (63, 64), (960, 960), (u32::MAX, 1024)] {
+            let image = assets.qr_card("101\n010\n101", requested, Color::default());
+            assert_eq!(image.size().width, expected);
+            assert_eq!(image.size().height, expected);
+            assert_eq!(
+                cache_len_bytes(&assets),
+                (1, expected as usize * expected as usize * 4)
+            );
+        }
+        let first = assets.qr_card("1", 0, Color::from_rgb_u8(255, 0, 0));
+        let second = assets.qr_card("1", 64, Color::from_rgb_u8(0, 0, 255));
+        assert_eq!(
+            first.to_rgba8().unwrap().as_slice().as_ptr(),
+            second.to_rgba8().unwrap().as_slice().as_ptr()
+        );
+        assert_eq!(cache_len_bytes(&assets), (1, 64 * 64 * 4));
+    }
 }

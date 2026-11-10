@@ -30,6 +30,7 @@ pub fn describe(status: &tl::enums::UserStatus, now: i64) -> (String, bool) {
         UserStatus::Recently(_) => "был(а) недавно".into(),
         UserStatus::LastWeek(_) => "был(а) на этой неделе".into(),
         UserStatus::LastMonth(_) => "был(а) в этом месяце".into(),
+        UserStatus::Empty => "был(а) очень давно".into(),
         _ => "не в сети".into(),
     };
     (text, false)
@@ -44,6 +45,10 @@ pub fn for_peer(peer: &grammers_client::peer::Peer) -> (String, bool) {
         Peer::Group(_) => ("группа".into(), false),
         Peer::Channel(_) => ("канал".into(), false),
     }
+}
+
+pub fn no_photo(peer: &grammers_client::peer::Peer) -> bool {
+    matches!(peer, grammers_client::peer::Peer::User(user) if !user.is_self() && !user.is_bot() && user.photo().is_none())
 }
 
 #[cfg(test)]

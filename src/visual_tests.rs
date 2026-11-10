@@ -189,17 +189,20 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     ui.show().unwrap();
     window.advance(500);
 
-    for (name, width, scale, dark, channel) in [
-        ("desktop-100", 1100, 1.0, true, false),
-        ("desktop-125", 1100, 1.25, true, false),
-        ("desktop-150", 1100, 1.5, true, false),
-        ("desktop-175", 1100, 1.75, true, false),
-        ("desktop-200", 1100, 2.0, true, false),
-        ("desktop-300", 1100, 3.0, true, false),
-        ("desktop-light", 1100, 1.0, false, false),
-        ("channel", 1100, 1.0, true, true),
-        ("compact", 430, 1.0, true, false),
-        ("menu", 1100, 1.0, true, false),
+    for (name, width, height, scale, dark, channel) in [
+        ("desktop-100", 1100, 720, 1.0, true, false),
+        ("desktop-125", 1100, 720, 1.25, true, false),
+        ("desktop-150", 1100, 720, 1.5, true, false),
+        ("desktop-175", 1100, 720, 1.75, true, false),
+        ("desktop-200", 1100, 720, 2.0, true, false),
+        ("desktop-300", 1100, 720, 3.0, true, false),
+        ("desktop-light", 1100, 720, 1.0, false, false),
+        ("maximized-1080p", 1920, 1040, 1.0, true, false),
+        ("maximized-1440p-150", 1706, 933, 1.5, true, false),
+        ("maximized-4k-200", 1920, 1040, 2.0, true, false),
+        ("channel", 1100, 720, 1.0, true, true),
+        ("compact", 430, 720, 1.0, true, false),
+        ("menu", 1100, 720, 1.0, true, false),
     ] {
         let mut active = chats[0].row.clone();
         active.read_outbox_max_id = 10;
@@ -226,7 +229,7 @@ fn portable_interface_renders_icons_at_multiple_scales() {
             scale_factor: scale,
         });
         let physical_width = (width as f32 * scale) as u32;
-        let physical_height = (720.0 * scale) as u32;
+        let physical_height = (height as f32 * scale) as u32;
         window
             .window
             .set_size(PhysicalSize::new(physical_width, physical_height));
@@ -323,11 +326,15 @@ fn portable_interface_renders_icons_at_multiple_scales() {
         }
     }
     verify_telegram_motion(&window, &ui);
+    verify_profiles(&window, &ui);
+    verify_tray_resource_release(&window, &ui);
     verify_sending(&window, &ui);
     verify_incoming(&window, &ui);
     verify_context_menu(&window, &ui);
     verify_photos_and_replies(&window, &ui);
     verify_rich_text_and_composer(&window, &ui);
+    verify_maximized_history_work(&window, &ui);
+    verify_network_burst_yields(&window, &ui);
     ui.hide().unwrap();
     drop(ui);
 
@@ -939,16 +946,15 @@ fn verify_photos_and_replies(window: &PreviewWindow, ui: &Desktop) {
         live_message(&photo),
     ]);
     state.refresh_history(ui);
+    state.media.visible_details.insert((0, 3));
     events
         .send(telegram::TgEvent::Thumbnail {
             peer_id: 0,
             message_id: 3,
             key: String::new(),
-            pixels: Some(image::RgbaImage::from_pixel(
-                640,
-                480,
-                image::Rgba([20, 160, 80, 255]),
-            )),
+            pixels: Some(
+                image::RgbaImage::from_pixel(640, 480, image::Rgba([20, 160, 80, 255])).into(),
+            ),
         })
         .unwrap();
     events
@@ -1059,11 +1065,9 @@ fn verify_photos_and_replies(window: &PreviewWindow, ui: &Desktop) {
             peer_id: 0,
             message_id: 3,
             key: "old-photo".into(),
-            pixels: Some(image::RgbaImage::from_pixel(
-                640,
-                480,
-                image::Rgba([220, 20, 20, 255]),
-            )),
+            pixels: Some(
+                image::RgbaImage::from_pixel(640, 480, image::Rgba([220, 20, 20, 255])).into(),
+            ),
         })
         .unwrap();
     state.poll_telegram(ui);
@@ -1076,11 +1080,9 @@ fn verify_photos_and_replies(window: &PreviewWindow, ui: &Desktop) {
             peer_id: 0,
             message_id: 3,
             key: "new-photo".into(),
-            pixels: Some(image::RgbaImage::from_pixel(
-                640,
-                480,
-                image::Rgba([20, 160, 80, 255]),
-            )),
+            pixels: Some(
+                image::RgbaImage::from_pixel(640, 480, image::Rgba([20, 160, 80, 255])).into(),
+            ),
         })
         .unwrap();
     state.poll_telegram(ui);
@@ -1171,7 +1173,8 @@ fn verify_sending(window: &PreviewWindow, ui: &Desktop) {
     assert!(state.chats[0].messages.row_data(before).unwrap().pending);
     assert!(matches!(
         commands.try_recv().unwrap(),
-        telegram::TgCommand::SendMessage(0, _, Some(42))
+        telegram::TgCommand::SendFormatted(0, text, Some(42), entities)
+            if text == "Текст плавно перелетает из поля ввода в сообщение" && entities.is_empty()
     ));
     window.advance(0);
     let start = window.take_snapshot().unwrap();
@@ -1263,7 +1266,8 @@ fn verify_sending(window: &PreviewWindow, ui: &Desktop) {
     assert_eq!(state.chats[0].messages.row_count(), before + 2);
     assert!(matches!(
         commands.try_recv().unwrap(),
-        telegram::TgCommand::SendMessage(0, _, Some(53))
+        telegram::TgCommand::SendFormatted(0, text, Some(53), entities)
+            if text == "Следующее сообщение" && entities.is_empty()
     ));
     assert!(
         state.chats[0]
@@ -1463,6 +1467,413 @@ fn verify_rich_text_and_composer(window: &PreviewWindow, ui: &Desktop) {
     ui.set_draft(Default::default());
     window.take_snapshot().unwrap();
     assert!((ui.get_composer_height() - 46.0).abs() <= 1.0);
+}
+
+fn verify_network_burst_yields(window: &PreviewWindow, ui: &Desktop) {
+    let (bridge, _commands, events) = telegram::TelegramBridge::offline_for_rendering();
+    let state = Rc::new(RefCell::new(Demo::with_bridge(bridge)));
+    let (weak, callback_state) = (ui.as_weak(), state.clone());
+    ui.on_network_events(move || {
+        if let Some(ui) = weak.upgrade() {
+            callback_state.borrow_mut().poll_telegram(&ui);
+        }
+    });
+    for index in 0..130 {
+        events
+            .send(telegram::TgEvent::Error {
+                message: format!("burst-{index}"),
+            })
+            .unwrap();
+    }
+    state.borrow_mut().poll_telegram(ui);
+    assert_ne!(
+        ui.get_network_status(),
+        "burst-129",
+        "one UI turn must not drain a large event burst"
+    );
+    for _ in 0..130 {
+        window.advance(2);
+        if ui.get_network_status() == "burst-129" {
+            break;
+        }
+    }
+    assert_eq!(
+        ui.get_network_status(),
+        "burst-129",
+        "deferred batches must preserve the tail of the queue"
+    );
+    window.advance(2);
+    ui.on_network_events(|| {});
+}
+
+// Work-count assertions are deterministic on shared CI runners. Snapshot
+// timings are not a GPU/DWM frame-rate measurement and must not gate CI.
+fn verify_maximized_history_work(window: &PreviewWindow, ui: &Desktop) {
+    window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
+    window.window.set_size(PhysicalSize::new(1920, 1040));
+    ui.set_auth_required(false);
+    ui.set_window_visible(true);
+    ui.set_has_chat(true);
+    ui.set_show_chat(true);
+    ui.set_chat_menu_open(false);
+    ui.set_emoji_open(false);
+    ui.set_draft(Default::default());
+    let requested = Rc::new(RefCell::new(Vec::new()));
+    let calls = requested.clone();
+    ui.on_request_details(move |id| calls.borrow_mut().push(id));
+    let rows = Rc::new(VecModel::from(
+        (1..=400)
+            .map(|id| {
+                let mut row = message(
+                    &format!("Сообщение {id}: проверка длинной истории"),
+                    "12:00",
+                    id % 2 == 0,
+                );
+                row.id = id;
+                row.date = "10 ноября".into();
+                row
+            })
+            .collect::<Vec<_>>(),
+    ));
+    ui.set_messages(ModelRc::from(rows.clone()));
+    window.take_snapshot().unwrap();
+    ui.invoke_scroll_to_bottom();
+    let settle = || {
+        for _ in 0..4 {
+            window.advance(100);
+            window.take_snapshot().unwrap();
+        }
+    };
+    settle();
+    assert!(
+        requested.borrow().is_empty(),
+        "plain text must not trigger detail scans"
+    );
+
+    // One unresolved quote above the viewport and one at its bottom. Keep
+    // requests unresolved so a repeating idle timer cannot hide behind caching.
+    for index in [0, 399] {
+        let mut row = rows.row_data(index).unwrap();
+        row.reply_to = 9000;
+        rows.set_row_data(index, row);
+    }
+    window.take_snapshot().unwrap();
+    ui.invoke_scroll_to_bottom();
+    settle();
+    assert!(requested.borrow().contains(&400));
+    assert!(
+        !requested.borrow().contains(&1),
+        "offscreen details must stay lazy"
+    );
+    let at_rest = requested.borrow().len();
+    for _ in 0..12 {
+        window.advance(80);
+        window.take_snapshot().unwrap();
+    }
+    assert_eq!(
+        requested.borrow().len(),
+        at_rest,
+        "idle history must not poll every 80ms"
+    );
+
+    requested.borrow_mut().clear();
+    ui.set_history_scroll_y(0.0);
+    settle();
+    assert!(
+        requested.borrow().contains(&1),
+        "scrolling must request newly visible details"
+    );
+    assert!(!requested.borrow().contains(&400));
+    save_animation_frame("maximized-history-top", &window.take_snapshot().unwrap());
+
+    requested.borrow_mut().clear();
+    ui.set_window_visible(false);
+    ui.invoke_scroll_to_bottom();
+    settle();
+    assert!(
+        requested.borrow().is_empty(),
+        "hidden windows must not request details"
+    );
+    ui.set_window_visible(true);
+    settle();
+    assert!(
+        requested.borrow().contains(&400),
+        "restoring the window must rescan"
+    );
+    requested.borrow_mut().clear();
+    window.window.set_size(PhysicalSize::new(1920, 1000));
+    settle();
+    assert!(
+        !requested.borrow().is_empty(),
+        "resizing a long history must rescan even when content height is unchanged"
+    );
+
+    let mut last = rows.row_data(399).unwrap();
+    last.reply_resolved = true;
+    rows.set_row_data(399, last);
+    settle();
+    requested.borrow_mut().clear();
+    ui.set_history_scroll_y(ui.get_history_scroll_y() + 1.0);
+    settle();
+    assert!(
+        requested.borrow().is_empty(),
+        "resolved details must not be requested again"
+    );
+    ui.on_request_details(|_| {});
+}
+
+fn verify_profiles(window: &PreviewWindow, ui: &Desktop) {
+    ui.set_auth_required(false);
+    ui.set_settings_open(false);
+    ui.set_menu_open(false);
+    ui.set_profile_key("test:profile".into());
+    ui.set_profile_name("Анна Смирнова".into());
+    ui.set_profile_initials("АС".into());
+    ui.set_profile_presence("в сети".into());
+    ui.set_profile_online(true);
+    ui.set_profile_is_user(true);
+    ui.set_profile_phone("+7 000 000 00 00".into());
+    ui.set_profile_username("@profile_test".into());
+    ui.set_profile_about(
+        "Тестовый профиль: длинное описание с переносом строки.\nТекст остаётся внутри панели."
+            .into(),
+    );
+    ui.set_profile_birthday("15 мая".into());
+    ui.set_profile_status(Default::default());
+    ui.set_profile_gifts_status(Default::default());
+    ui.set_profile_mute_ready(true);
+    ui.set_profile_has_photo(true);
+    let photo = slint_image(&image::RgbaImage::from_pixel(
+        80,
+        80,
+        image::Rgba([220, 90, 40, 255]),
+    ));
+    ui.set_profile_photo(photo.clone());
+    ui.set_profile_gifts(ModelRc::new(VecModel::from(
+        (0..12)
+            .map(|i| GiftRow {
+                key: format!("fixture:{i}").into(),
+                title: format!("Подарок {}", i + 1).into(),
+                detail: "100 Stars".into(),
+                photo: photo.clone(),
+                has_photo: i % 2 == 0,
+                collectible: i % 3 == 1,
+                center: Color::from_rgb_u8(151, 194, 158),
+                edge: Color::from_rgb_u8(61, 122, 88),
+                pattern_color: Color::from_rgb_u8(30, 76, 49),
+                badge: if i % 3 == 1 {
+                    "1 из 5K".into()
+                } else {
+                    Default::default()
+                },
+                ..Default::default()
+            })
+            .collect::<Vec<_>>(),
+    )));
+    ui.global::<Theme>().set_show_gifts(true);
+    ui.set_profile_open(true);
+    for (name, scale, dark, width, height) in [
+        ("profile-dark-100", 1.0, true, 1100, 720),
+        ("profile-light-150", 1.5, false, 1100, 720),
+        ("profile-dark-200", 2.0, true, 1100, 720),
+        ("profile-maximized", 1.0, true, 1920, 1040),
+        ("profile-short", 1.0, true, 1100, 480),
+        ("profile-narrow", 1.0, true, 400, 720),
+    ] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        window.window.set_size(PhysicalSize::new(
+            (width as f32 * scale) as u32,
+            (height as f32 * scale) as u32,
+        ));
+        ui.global::<Theme>().set_dark(dark);
+        ui.set_profile_scroll_y(0.0);
+        // Process Slint's deferred property-change handlers before advancing
+        // the animation clock; rendering alone does not start BoxOverlay.
+        window.advance(0);
+        window.take_snapshot().unwrap();
+        window.advance(250);
+        window.take_snapshot().unwrap();
+        assert_eq!(
+            ui.get_profile_header_y(),
+            0.0,
+            "{name}: header must be pinned to the panel's top, not centered"
+        );
+        assert_eq!(
+            ui.get_profile_header_height(),
+            236.0,
+            "upstream expanded header"
+        );
+        let panel_width = 392.0_f32.min((width as f32 - 96.0).max(324.0));
+        let columns = ((panel_width - 22.0 + 10.0) / 117.0).floor() as i32;
+        assert_eq!(
+            ui.get_profile_gift_columns(),
+            columns,
+            "Telegram gift column count"
+        );
+        assert_eq!(
+            ui.get_profile_gift_width(),
+            ((panel_width - 12.0) / columns as f32).floor() - 10.0,
+            "Telegram gift width rounding"
+        );
+        // Caption dragging must work even with a modal profile above the chat.
+        let drag_count = Rc::new(Cell::new(0));
+        let calls = drag_count.clone();
+        ui.on_drag_window(move || calls.set(calls.get() + 1));
+        let caption = LogicalPosition::new(120.0, 13.0);
+        window.dispatch_event(WindowEvent::PointerPressed {
+            position: caption,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        window.dispatch_event(WindowEvent::PointerReleased {
+            position: caption,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        assert_eq!(
+            drag_count.get(),
+            1,
+            "profile must not consume the native caption drag"
+        );
+        assert!(
+            ui.get_profile_open(),
+            "caption dragging must not dismiss the profile"
+        );
+        ui.on_drag_window(|| {});
+        let pixels = window.take_snapshot().unwrap();
+        save_animation_frame(name, &pixels);
+        let center = ((width as f32 / 2.0) * scale) as usize;
+        let y = ((40.0 + 24.0 + 40.0) * scale) as usize;
+        let p = pixels.as_slice()[y * pixels.width() as usize + center];
+        assert!(
+            p.r > 180 && p.g < 130,
+            "{name}: profile photo must render in upstream centered position; pixel={p:?}"
+        );
+        for offset in [60.0, 112.0, 150.0, 180.0] {
+            ui.set_profile_scroll_y(-offset);
+            window.take_snapshot().unwrap();
+            window.advance(1);
+            assert_eq!(
+                ui.get_profile_header_y(),
+                0.0,
+                "{name}: collapse must not move the header down"
+            );
+            assert_eq!(
+                ui.get_profile_header_height(),
+                (236.0_f32 - offset).max(56.0)
+            );
+        }
+        save_animation_frame(
+            &format!("{name}-collapsed"),
+            &window.take_snapshot().unwrap(),
+        );
+        // The close button must remain clickable at the top after collapse.
+        let panel_width = 392.0_f32.min((width as f32 - 96.0).max(324.0));
+        let position = LogicalPosition::new((width as f32 + panel_width) / 2.0 - 28.0, 65.0);
+        window.dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        window.dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        assert!(
+            !ui.get_profile_open(),
+            "{name}: top-right close button must dismiss the collapsed profile"
+        );
+        ui.set_profile_open(true);
+        window.advance(0);
+        window.take_snapshot().unwrap();
+        window.advance(250);
+        assert_eq!(
+            ui.get_profile_header_height(),
+            236.0,
+            "reopening resets the header"
+        );
+    }
+    ui.global::<Theme>().set_show_gifts(false);
+    ui.set_profile_scroll_y(0.0);
+    window.take_snapshot().unwrap();
+    window.advance(10);
+    save_animation_frame("profile-gifts-hidden", &window.take_snapshot().unwrap());
+    ui.set_profile_is_self(true);
+    save_animation_frame("profile-self", &window.take_snapshot().unwrap());
+    ui.set_profile_open(false);
+    ui.set_profile_has_photo(false);
+    ui.set_profile_gifts(Default::default());
+    ui.set_profile_is_self(false);
+    ui.global::<Theme>().set_show_gifts(true);
+    window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
+    window.window.set_size(PhysicalSize::new(1100, 720));
+    window.advance(250);
+}
+
+fn verify_tray_resource_release(window: &PreviewWindow, ui: &Desktop) {
+    let (bridge, _commands, events) = telegram::TelegramBridge::offline_for_rendering();
+    let mut state = Demo::with_bridge(bridge);
+    ui.set_window_visible(true);
+    ui.set_draft("Черновик остаётся при сворачивании".into());
+    state.refresh_chats(ui);
+    state.refresh_history(ui);
+    let before = state.chats[0].messages.row_count();
+    let mut row = state.chats[0].messages.row_data(0).unwrap();
+    row.preview = slint_image(&image::RgbaImage::from_pixel(
+        64,
+        64,
+        image::Rgba([100, 120, 140, 255]),
+    ));
+    row.has_preview = true;
+    let mid = row.id;
+    state.chats[0].messages.set_row_data(0, row);
+    state.preview_bytes = 64 * 64 * 4;
+    state.suspend_ui(ui);
+    window.take_snapshot().unwrap();
+    assert_eq!(
+        ui.get_messages().row_count(),
+        0,
+        "tray must unload history delegates"
+    );
+    assert_eq!(
+        ui.get_chats().row_count(),
+        0,
+        "tray must unload chat delegates"
+    );
+    assert_eq!(state.preview_bytes, 0);
+    assert!(!state.chats[0].messages.row_data(0).unwrap().has_preview);
+    assert_eq!(
+        state.chats[0].messages.row_count(),
+        before,
+        "messages are application state, not disposable UI"
+    );
+    events
+        .send(telegram::TgEvent::Thumbnail {
+            peer_id: state.chats[0].row.id,
+            message_id: mid,
+            key: String::new(),
+            pixels: Some(
+                image::RgbaImage::from_pixel(64, 64, image::Rgba([100, 120, 140, 255])).into(),
+            ),
+        })
+        .unwrap();
+    state.poll_telegram(ui);
+    state.refresh_chats(ui);
+    state.refresh_history(ui);
+    assert_eq!(
+        ui.get_messages().row_count(),
+        0,
+        "background work must not rebuild hidden delegates"
+    );
+    assert_eq!(
+        state.preview_bytes, 0,
+        "late media must not refill the cache in tray"
+    );
+    state.resume_ui(ui);
+    window.take_snapshot().unwrap();
+    window.advance(1);
+    assert_eq!(ui.get_messages().row_count(), before);
+    assert_eq!(ui.get_draft(), "Черновик остаётся при сворачивании");
+    ui.set_draft(Default::default());
 }
 
 fn save_animation_frame(name: &str, pixels: &slint::SharedPixelBuffer<Rgba8Pixel>) {

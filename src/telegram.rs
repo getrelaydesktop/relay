@@ -26,6 +26,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 
 #[derive(Debug, Clone, Default)]
 pub struct TgMessage {
+    pub sender_key: String,
     pub entities: Vec<tl::enums::MessageEntity>,
     pub entity_offset: i32,
     pub id: i32,
@@ -47,6 +48,7 @@ pub struct TgMessage {
 }
 #[derive(Debug, Clone)]
 pub struct TgDialog {
+    pub no_photo: bool,
     pub id: i32,
     pub title: String,
     pub initials: String,
@@ -89,8 +91,69 @@ pub struct TgFolder {
     pub title: String,
     pub chat_ids: Vec<i32>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GiftMediaKind {
+    Model,
+    Pattern,
+    Sender,
+    Owner,
+}
+#[derive(Debug, Clone)]
+pub enum GiftMediaSource {
+    Document(tl::enums::Document),
+    Peer(PeerRef),
+}
 #[derive(Debug, Clone)]
 pub enum TgEvent {
+    // Counts as one drained event, so discarding a stale backlog still yields
+    // through the ordinary UI batch budget instead of starving control events.
+    DiscardedMedia,
+    ProfileReady {
+        key: String,
+        profile: crate::profiles::Profile,
+    },
+    ProfilePhotoReady {
+        key: String,
+        pixels: crate::media::Pixels,
+    },
+    ProfilePhotoFailed {
+        key: String,
+        message: String,
+    },
+    GiftsReady {
+        key: String,
+        gifts: Vec<crate::profiles::Gift>,
+        next: String,
+        append: bool,
+    },
+    GiftPreview {
+        key: String,
+        gift_key: String,
+        pixels: crate::media::Pixels,
+        kind: GiftMediaKind,
+    },
+    GiftPreviewFailed {
+        key: String,
+        gift_key: String,
+        kind: GiftMediaKind,
+    },
+    GiftsFailed {
+        key: String,
+        message: String,
+    },
+    ProfileMuteResult {
+        key: String,
+        muted: Option<bool>,
+        message: String,
+    },
+    ProfileFailed {
+        key: String,
+        message: String,
+    },
+    FileSent {
+        path: PathBuf,
+    },
+    FilesSent,
     Presence {
         peer_id: i32,
         text: String,
@@ -100,7 +163,7 @@ pub enum TgEvent {
         peer_id: i32,
         message_id: i32,
         key: String,
-        pixels: Option<image::RgbaImage>,
+        pixels: Option<crate::media::Pixels>,
     },
     ReplyResolved {
         peer_id: i32,
@@ -181,11 +244,11 @@ pub enum TgEvent {
     PhotoReady {
         peer_id: i32,
         message_id: i32,
-        pixels: image::RgbaImage,
+        pixels: crate::media::Pixels,
     },
     AvatarReady {
         peer_id: i32,
-        pixels: image::RgbaImage,
+        pixels: crate::media::Pixels,
     },
     ChannelJoined {
         peer_id: i32,
@@ -205,7 +268,20 @@ pub enum TgEvent {
     },
 }
 pub(crate) enum TgCommand {
-    Thumbnail(i32, i32),
+    Profile(String, bool, Option<String>, crate::media::Ticket),
+    ProfilePhoto(String, crate::media::Ticket),
+    GiftMedia(
+        String,
+        String,
+        GiftMediaSource,
+        GiftMediaKind,
+        u32,
+        crate::media::Ticket,
+    ),
+    ForgetAvatars(Vec<i32>),
+    ProfileMessage(String),
+    ProfileMute(String, bool),
+    Thumbnail(i32, i32, crate::media::Ticket),
     ResolveReply(i32, i32),
     JumpReply(i32, i32),
     StartQr,
@@ -216,9 +292,12 @@ pub(crate) enum TgCommand {
     LoadAvatar(i32),
     LoadHistory(i32),
     SendMessage(i32, String, Option<i32>),
+    SendFormatted(i32, String, Option<i32>, Vec<tl::enums::MessageEntity>),
+    EditFormatted(i32, i32, String, Vec<tl::enums::MessageEntity>),
+    SendFiles(i32, Vec<PathBuf>, String, Option<i32>),
     SendFile(i32, PathBuf, String, Option<i32>),
     Download(i32, i32),
-    ViewPhoto(i32, i32),
+    ViewPhoto(i32, i32, crate::media::Ticket),
     JoinChannel(i32),
     Edit(i32, i32, String),
     Delete(i32, i32),
@@ -231,27 +310,75 @@ pub(crate) enum TgCommand {
 }
 pub struct TelegramBridge {
     commands: async_mpsc::UnboundedSender<TgCommand>,
-    events: mpsc::Receiver<TgEvent>,
+    events: mpsc::Receiver<MediaEvent>,
     errors: EventSink,
+    profile_scope: crate::media::Scope,
+    gift_scope: crate::media::Scope,
+    photo_scope: crate::media::Scope,
+    thumbnail_scopes: std::cell::RefCell<HashMap<(i32, i32), crate::media::Scope>>,
+}
+
+struct MediaEvent {
+    event: TgEvent,
+    ticket: Option<crate::media::Ticket>,
+    _bytes: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+fn event_image_bytes(event: &TgEvent) -> usize {
+    match event {
+        TgEvent::PhotoReady { pixels, .. }
+        | TgEvent::ProfilePhotoReady { pixels, .. }
+        | TgEvent::AvatarReady { pixels, .. }
+        | TgEvent::GiftPreview { pixels, .. } => pixels.len(),
+        TgEvent::Thumbnail { pixels, .. } => pixels.as_ref().map_or(0, |p| p.len()),
+        TgEvent::ProfileReady { profile, .. } => profile.photo.as_ref().map_or(0, |p| p.len()),
+
+        _ => 0,
+    }
 }
 
 type Wake = Box<dyn Fn() + Send + Sync>;
 #[derive(Clone)]
 pub struct EventSink {
-    tx: mpsc::Sender<TgEvent>,
+    tx: mpsc::Sender<MediaEvent>,
     wake: Arc<Mutex<Option<Wake>>>,
     notified: Arc<AtomicBool>,
+    media_bytes: Arc<tokio::sync::Semaphore>,
+    ticket: Option<crate::media::Ticket>,
 }
 impl EventSink {
-    fn new(tx: mpsc::Sender<TgEvent>) -> Self {
+    fn new(tx: mpsc::Sender<MediaEvent>) -> Self {
         Self {
             tx,
             wake: Default::default(),
             notified: Default::default(),
+            media_bytes: Arc::new(tokio::sync::Semaphore::new(
+                crate::media::MEDIA_MAILBOX_BYTES as usize,
+            )),
+            ticket: None,
         }
     }
-    pub fn send(&self, event: TgEvent) -> std::result::Result<(), mpsc::SendError<TgEvent>> {
-        self.tx.send(event)?;
+    fn scoped(&self, ticket: crate::media::Ticket) -> Self {
+        Self {
+            ticket: Some(ticket),
+            ..self.clone()
+        }
+    }
+    fn publish(
+        &self,
+        event: TgEvent,
+        bytes: Option<tokio::sync::OwnedSemaphorePermit>,
+    ) -> std::result::Result<(), mpsc::SendError<TgEvent>> {
+        if self.ticket.as_ref().is_some_and(|t| !t.is_current()) {
+            return Ok(());
+        }
+        self.tx
+            .send(MediaEvent {
+                event,
+                ticket: self.ticket.clone(),
+                _bytes: bytes,
+            })
+            .map_err(|e| mpsc::SendError(e.0.event))?;
         if !self.notified.swap(true, Ordering::AcqRel) {
             if let Some(wake) = self.wake.lock().unwrap().as_ref() {
                 wake();
@@ -259,8 +386,97 @@ impl EventSink {
         }
         Ok(())
     }
+    pub fn send(&self, event: TgEvent) -> std::result::Result<(), mpsc::SendError<TgEvent>> {
+        let bytes = event_image_bytes(&event);
+        let permit = if bytes == 0 {
+            None
+        } else {
+            let Ok(bytes) = u32::try_from(bytes) else {
+                return Err(mpsc::SendError(event));
+            };
+            match self.media_bytes.clone().try_acquire_many_owned(bytes) {
+                Ok(permit) => Some(permit),
+                Err(_) => return Err(mpsc::SendError(event)),
+            }
+        };
+        self.publish(event, permit)
+    }
+    pub async fn send_media(
+        &self,
+        event: TgEvent,
+    ) -> std::result::Result<(), mpsc::SendError<TgEvent>> {
+        let Ok(bytes) = u32::try_from(event_image_bytes(&event)) else {
+            return Err(mpsc::SendError(event));
+        };
+        if bytes > crate::media::MEDIA_MAILBOX_BYTES {
+            return Err(mpsc::SendError(event));
+        }
+        let acquire = self.media_bytes.clone().acquire_many_owned(bytes);
+        let permit = if let Some(ticket) = &self.ticket {
+            let Some(result) = ticket.run(acquire).await else {
+                return Ok(());
+            };
+            result
+        } else {
+            acquire.await
+        };
+        let Ok(permit) = permit else {
+            return Err(mpsc::SendError(event));
+        };
+        self.publish(event, Some(permit))
+    }
 }
 impl TelegramBridge {
+    pub fn profile_message(&mut self, key: &str) {
+        self.send(TgCommand::ProfileMessage(key.into()));
+    }
+    pub fn profile_mute(&mut self, key: &str, muted: bool) {
+        self.send(TgCommand::ProfileMute(key.into(), muted));
+    }
+    pub fn profile(&mut self, key: &str, gifts: bool, offset: Option<String>) {
+        let ticket = if offset.is_none() {
+            self.gift_scope.cancel();
+            self.profile_scope.next()
+        } else {
+            self.profile_scope.current()
+        };
+        self.send(TgCommand::Profile(key.into(), gifts, offset, ticket));
+    }
+    pub fn profile_photo(&mut self, key: &str) {
+        self.send(TgCommand::ProfilePhoto(key.into(), self.photo_scope.next()));
+    }
+    pub fn cancel_profile(&self) {
+        self.profile_scope.cancel();
+        self.cancel_gifts();
+    }
+    pub fn cancel_gifts(&self) {
+        self.gift_scope.cancel();
+    }
+    pub fn cancel_photo(&self) {
+        self.photo_scope.cancel();
+    }
+    pub fn gift_media(
+        &self,
+        key: &str,
+        gift_key: &str,
+        source: GiftMediaSource,
+        kind: GiftMediaKind,
+        size: u32,
+    ) {
+        self.send(TgCommand::GiftMedia(
+            key.into(),
+            gift_key.into(),
+            source,
+            kind,
+            size.clamp(20, 256),
+            self.gift_scope.current(),
+        ));
+    }
+    pub fn forget_avatars(&self, ids: Vec<i32>) {
+        if !ids.is_empty() {
+            self.send(TgCommand::ForgetAvatars(ids));
+        }
+    }
     pub fn notify_with(&self, wake: impl Fn() + Send + Sync + 'static) {
         *self.errors.wake.lock().unwrap() = Some(Box::new(wake));
         self.errors.notified.store(false, Ordering::Release);
@@ -272,7 +488,26 @@ impl TelegramBridge {
         self.errors.notified.store(false, Ordering::Release);
     }
     pub fn thumbnail(&self, peer: i32, id: i32) {
-        self.send(TgCommand::Thumbnail(peer, id));
+        let ticket = self
+            .thumbnail_scopes
+            .borrow_mut()
+            .entry((peer, id))
+            .or_default()
+            .next();
+        self.send(TgCommand::Thumbnail(peer, id, ticket));
+    }
+    pub fn cancel_thumbnail(&self, peer: i32, id: i32) {
+        if let Some(scope) = self.thumbnail_scopes.borrow_mut().remove(&(peer, id)) {
+            scope.cancel();
+        }
+    }
+    pub fn complete_thumbnail(&self, peer: i32, id: i32) {
+        self.thumbnail_scopes.borrow_mut().remove(&(peer, id));
+    }
+    pub fn cancel_thumbnails(&self) {
+        for (_, scope) in self.thumbnail_scopes.borrow_mut().drain() {
+            scope.cancel();
+        }
     }
     pub fn resolve_reply(&self, peer: i32, id: i32) {
         self.send(TgCommand::ResolveReply(peer, id));
@@ -290,6 +525,10 @@ impl TelegramBridge {
                 commands,
                 events,
                 errors: errors.clone(),
+                profile_scope: Default::default(),
+                gift_scope: Default::default(),
+                photo_scope: Default::default(),
+                thumbnail_scopes: Default::default(),
             },
             receiver,
             errors,
@@ -302,7 +541,15 @@ impl TelegramBridge {
         let (commands, rx) = async_mpsc::unbounded_channel();
         let errors = tx.clone();
         thread::spawn(move || {
-            match tokio::runtime::Builder::new_current_thread()
+            // Network futures may run independently, while CPU-heavy media
+            // work uses the separate blocking pool. Leave a core for the UI
+            // when possible and avoid creating a worker per logical CPU.
+            let workers = thread::available_parallelism()
+                .map(|count| count.get().saturating_sub(1).clamp(1, 4))
+                .unwrap_or(2);
+            match tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(workers)
+                .max_blocking_threads(4)
                 .enable_all()
                 .build()
             {
@@ -318,17 +565,30 @@ impl TelegramBridge {
             commands,
             events,
             errors,
+            profile_scope: Default::default(),
+            gift_scope: Default::default(),
+            photo_scope: Default::default(),
+            thumbnail_scopes: Default::default(),
         }
     }
     pub fn try_recv(&self) -> Option<TgEvent> {
-        self.events.try_recv().ok()
+        self.events.try_recv().ok().map(|item| {
+            if item.ticket.as_ref().is_some_and(|t| !t.is_current()) {
+                TgEvent::DiscardedMedia
+            } else {
+                item.event
+            }
+        })
     }
     fn send(&self, cmd: TgCommand) {
         if let Err(error) = self.commands.send(cmd) {
             let message = "Соединение Telegram остановлено. Перезапустите приложение.";
             if matches!(
                 error.0,
-                TgCommand::SendMessage(..) | TgCommand::SendFile(..)
+                TgCommand::SendMessage(..)
+                    | TgCommand::SendFile(..)
+                    | TgCommand::SendFormatted(..)
+                    | TgCommand::SendFiles(..)
             ) {
                 let _ = self.errors.send(TgEvent::SendFailed {
                     message: message.into(),
@@ -356,7 +616,7 @@ impl TelegramBridge {
     pub fn load_history(&mut self, id: i32) {
         self.send(TgCommand::LoadHistory(id));
     }
-    pub fn load_avatar(&mut self, id: i32) {
+    pub fn load_avatar(&self, id: i32) {
         self.send(TgCommand::LoadAvatar(id));
     }
     pub fn send_message(&mut self, id: i32, text: &str, reply: Option<i32>) {
@@ -370,11 +630,32 @@ impl TelegramBridge {
             reply,
         ));
     }
+    pub fn send_formatted(
+        &mut self,
+        id: i32,
+        text: &str,
+        reply: Option<i32>,
+        entities: Vec<tl::enums::MessageEntity>,
+    ) {
+        self.send(TgCommand::SendFormatted(id, text.into(), reply, entities));
+    }
+    pub fn edit_formatted(
+        &mut self,
+        id: i32,
+        mid: i32,
+        text: &str,
+        entities: Vec<tl::enums::MessageEntity>,
+    ) {
+        self.send(TgCommand::EditFormatted(id, mid, text.into(), entities));
+    }
+    pub fn send_files(&mut self, id: i32, paths: Vec<PathBuf>, caption: &str, reply: Option<i32>) {
+        self.send(TgCommand::SendFiles(id, paths, caption.into(), reply));
+    }
     pub fn download(&mut self, peer: i32, id: i32) {
         self.send(TgCommand::Download(peer, id));
     }
     pub fn view_photo(&mut self, peer: i32, id: i32) {
-        self.send(TgCommand::ViewPhoto(peer, id));
+        self.send(TgCommand::ViewPhoto(peer, id, self.photo_scope.next()));
     }
     pub fn join_channel(&mut self, peer: i32) {
         self.send(TgCommand::JoinChannel(peer));
@@ -450,6 +731,11 @@ fn message(m: &grammers_client::message::Message) -> TgMessage {
         None => String::new(),
     };
     TgMessage {
+        sender_key: m
+            .sender_id()
+            .filter(|id| id.kind() == grammers_session::types::PeerKind::User)
+            .map(|id| format!("user:{}", id.bare_id_unchecked()))
+            .unwrap_or_default(),
         // Media labels are prepended to body; retain the UTF-16 prefix length.
         entities: m.fmt_entities().cloned().unwrap_or_default(),
         entity_offset: if label.is_empty() || m.text().is_empty() {
@@ -458,9 +744,9 @@ fn message(m: &grammers_client::message::Message) -> TgMessage {
             label.encode_utf16().count() as i32 + 1
         },
         sender: m
-            .sender()
-            .and_then(|sender| sender.name())
-            .unwrap_or("Удалённый аккаунт")
+            .post_author()
+            .or_else(|| m.sender().and_then(|sender| sender.name()))
+            .unwrap_or("Неизвестный отправитель")
             .to_owned(),
         reply_to: m.reply_to_message_id().unwrap_or_default(),
         reply_quote,
@@ -642,21 +928,94 @@ impl Worker {
                 download_image(&client, &photo, 1024 * 1024, 1024).await
             };
             if let Ok(Ok(pixels)) = tokio::time::timeout(Duration::from_secs(15), download).await {
-                // Keep enough source detail for high-DPI avatars. Skia samples
-                // and clips this image at the actual display scale.
-                let pixels = if pixels.width() > 256 || pixels.height() > 256 {
-                    image::DynamicImage::ImageRgba8(pixels)
-                        .resize(256, 256, image::imageops::FilterType::Lanczos3)
-                        .into_rgba8()
-                } else {
-                    pixels
+                // Lanczos resampling is CPU work: do not block the async
+                // executor while several visible avatars arrive together.
+                let Ok(pixels) = resize_image(pixels, 256).await else {
+                    return;
                 };
-                let _ = tx.send(TgEvent::AvatarReady {
-                    peer_id: id,
-                    pixels,
-                });
+                let _ = tx
+                    .send_media(TgEvent::AvatarReady {
+                        peer_id: id,
+                        pixels: pixels.into(),
+                    })
+                    .await;
             }
         });
+    }
+    fn load_detail(
+        &mut self,
+        id: i32,
+        mid: i32,
+        thumbnail: bool,
+        ticket: Option<crate::media::Ticket>,
+    ) -> Result<()> {
+        if ticket.as_ref().is_some_and(|t| !t.is_current()) {
+            return Ok(());
+        }
+        let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
+        let client = self.client.clone();
+        let tx = ticket
+            .as_ref()
+            .map_or_else(|| self.tx.clone(), |t| self.tx.scoped(t.clone()));
+        let slots = self.detail_slots.clone();
+        self.avatar_tasks.spawn(async move {
+            let work = async {
+                let Ok(_permit) = slots.acquire().await else {
+                    return;
+                };
+                let result = tokio::time::timeout(Duration::from_secs(25), async {
+                    let source = client
+                        .get_messages_by_id(peer, &[mid])
+                        .await?
+                        .into_iter()
+                        .flatten()
+                        .next()
+                        .ok_or("Сообщение недоступно")?;
+                    if thumbnail {
+                        let pixels = thumbnail_image(&client, &source).await?;
+                        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(TgEvent::Thumbnail {
+                            peer_id: id,
+                            message_id: mid,
+                            key: media_key(source.media().as_ref()),
+                            pixels: Some(pixels.into()),
+                        })
+                    } else {
+                        let original = source.get_reply().await?.as_ref().map(message);
+                        Ok(TgEvent::ReplyResolved {
+                            peer_id: id,
+                            message_id: mid,
+                            original,
+                        })
+                    }
+                })
+                .await;
+                let event = result.ok().and_then(|r| r.ok()).unwrap_or_else(|| {
+                    if thumbnail {
+                        TgEvent::Thumbnail {
+                            peer_id: id,
+                            message_id: mid,
+                            key: String::new(),
+                            pixels: None,
+                        }
+                    } else {
+                        TgEvent::ReplyResolved {
+                            peer_id: id,
+                            message_id: mid,
+                            original: None,
+                        }
+                    }
+                });
+                // Keep the download slot until the byte-bounded mailbox has
+                // accepted the image, not just until decoding finishes.
+                let _ = tx.send_media(event).await;
+            };
+            if let Some(ticket) = ticket {
+                ticket.run(work).await;
+            } else {
+                work.await;
+            }
+        });
+        Ok(())
     }
     fn outbox_read(&self, peer: grammers_session::types::PeerId, max_id: i32) {
         if let Some((&peer_id, _)) = self.peers.iter().find(|(_, p)| p.id == peer) {
@@ -741,6 +1100,7 @@ impl Worker {
                 },
                 saved: false,
                 channel: ChannelAccess::for_peer(peer),
+                no_photo: crate::presence::no_photo(peer),
                 messages: vec![],
                 presence: crate::presence::for_peer(peer).0,
                 online: crate::presence::for_peer(peer).1,
@@ -838,6 +1198,11 @@ impl Worker {
         self.avatar_requests.clear();
         self.online_until.clear();
         self.folder_dialogs.clear();
+        if let Some(reference) = me.to_ref().await? {
+            self.peers.insert(0, reference);
+            self.avatar_peers
+                .insert(0, grammers_client::peer::Peer::User(me.clone()));
+        }
         let mut iter = self.client.iter_dialogs();
         while dialogs.len() < 500 {
             let Some(d) = iter.next().await? else { break };
@@ -870,6 +1235,7 @@ impl Worker {
                 },
                 saved,
                 channel: ChannelAccess::for_peer(d.peer()),
+                no_photo: crate::presence::no_photo(d.peer()),
                 messages: d.last_message.as_ref().map(message).into_iter().collect(),
                 presence: crate::presence::for_peer(d.peer()).0,
                 online: crate::presence::for_peer(d.peer()).1,
@@ -892,66 +1258,178 @@ impl Worker {
         }
         Ok(())
     }
+    async fn profile_peer(&self, key: &str) -> Result<PeerRef> {
+        let peer = if key == "self" {
+            self.peers.get(&0).copied()
+        } else if let Some(id) = key
+            .strip_prefix("chat:")
+            .and_then(|s| s.parse::<i32>().ok())
+        {
+            self.peers.get(&id).copied()
+        } else if let Some(id) = key
+            .strip_prefix("user:")
+            .and_then(|s| s.parse::<i64>().ok())
+            .and_then(grammers_session::types::PeerId::user)
+        {
+            self.session.peer_ref(id).await?
+        } else {
+            None
+        };
+        peer.ok_or_else(|| "Профиль недоступен".into())
+    }
+
     async fn command(&mut self, cmd: TgCommand) -> Result<()> {
         match cmd {
-            TgCommand::Thumbnail(id, mid) | TgCommand::ResolveReply(id, mid) => {
-                let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
-                let thumbnail = matches!(cmd, TgCommand::Thumbnail(..));
-                let client = self.client.clone();
-                let tx = self.tx.clone();
-                let slots = self.detail_slots.clone();
-                self.avatar_tasks.spawn(async move {
-                    let Ok(_permit) = slots.acquire().await else {
-                        return;
-                    };
-                    let result = tokio::time::timeout(Duration::from_secs(25), async {
-                        let source = client
-                            .get_messages_by_id(peer, &[mid])
-                            .await?
-                            .into_iter()
-                            .flatten()
-                            .next()
-                            .ok_or("Сообщение недоступно")?;
-                        if thumbnail {
-                            let pixels = thumbnail_image(&client, &source).await?;
-                            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(TgEvent::Thumbnail {
-                                peer_id: id,
-                                message_id: mid,
-                                key: media_key(source.media().as_ref()),
-                                pixels: Some(pixels),
-                            })
-                        } else {
-                            let original = source.get_reply().await?.as_ref().map(message);
-                            Ok(TgEvent::ReplyResolved {
-                                peer_id: id,
-                                message_id: mid,
-                                original,
-                            })
-                        }
-                    })
-                    .await;
-                    let event = result
-                        .ok()
-                        .and_then(|result| result.ok())
-                        .unwrap_or_else(|| {
-                            if thumbnail {
-                                TgEvent::Thumbnail {
-                                    peer_id: id,
-                                    message_id: mid,
-                                    key: String::new(),
-                                    pixels: None,
-                                }
-                            } else {
-                                TgEvent::ReplyResolved {
-                                    peer_id: id,
-                                    message_id: mid,
-                                    original: None,
-                                }
+            TgCommand::ProfileMute(key, muted) => {
+                let result = tokio::time::timeout(Duration::from_secs(15), async {
+                    let peer = self.profile_peer(&key).await?;
+                    self.client
+                        .invoke(&tl::functions::account::UpdateNotifySettings {
+                            peer: tl::types::InputNotifyPeer { peer: peer.into() }.into(),
+                            settings: tl::types::InputPeerNotifySettings {
+                                mute_until: Some(if muted { i32::MAX } else { 0 }),
+                                show_previews: None,
+                                silent: None,
+                                sound: None,
+                                stories_muted: None,
+                                stories_hide_sender: None,
+                                stories_sound: None,
                             }
-                        });
-                    let _ = tx.send(event);
+                            .into(),
+                        })
+                        .await?;
+                    Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+                })
+                .await;
+                let (muted, message) = match result {
+                    Ok(Ok(())) => (Some(muted), String::new()),
+                    Ok(Err(error)) => (None, error.to_string()),
+                    Err(_) => (None, "Превышено время ожидания Telegram".into()),
+                };
+                let _ = self.tx.send(TgEvent::ProfileMuteResult {
+                    key,
+                    muted,
+                    message,
                 });
             }
+            TgCommand::ProfileMessage(key) => {
+                let reference = self.profile_peer(&key).await?;
+                let peer = self.client.resolve_peer(reference).await?;
+                let id = self
+                    .peers
+                    .iter()
+                    .find_map(|(&id, p)| (p.id == reference.id).then_some(id))
+                    .unwrap_or_else(|| self.peers.keys().max().copied().unwrap_or(10) + 1);
+                self.peers.insert(id, reference);
+                self.avatar_peers.insert(id, peer.clone());
+                self.track_presence(id, &peer);
+                let title = peer.name().unwrap_or("Telegram").to_owned();
+                let _ = self.tx.send(TgEvent::DialogOpened {
+                    dialog: TgDialog {
+                        id,
+                        initials: initials(&title),
+                        title,
+                        unread: 0,
+                        read_outbox_max_id: 0,
+                        folder: if matches!(peer, grammers_client::peer::Peer::User(_)) {
+                            2
+                        } else {
+                            1
+                        },
+                        saved: key == "self",
+                        channel: ChannelAccess::for_peer(&peer),
+                        no_photo: crate::presence::no_photo(&peer),
+                        messages: vec![],
+                        presence: crate::presence::for_peer(&peer).0,
+                        online: crate::presence::for_peer(&peer).1,
+                    },
+                });
+            }
+            TgCommand::Profile(key, gifts, offset, ticket) => {
+                if !ticket.is_current() {
+                    return Ok(());
+                }
+                if let Ok(peer) = self.profile_peer(&key).await {
+                    let client = self.client.clone();
+                    let tx = self.tx.scoped(ticket.clone());
+                    self.avatar_tasks.spawn(async move {
+                        let work = async {
+                            let gift_page = offset.is_some();
+                            let result = if let Some(offset) = offset {
+                                crate::profiles::load_gifts(&client, peer, &key, &offset, &tx).await
+                            } else {
+                                crate::profiles::load(client, peer, key.clone(), gifts, tx.clone())
+                                    .await
+                            };
+                            if let Err(error) = result {
+                                let message = error.to_string();
+                                let event = if gift_page {
+                                    TgEvent::GiftsFailed { key, message }
+                                } else {
+                                    TgEvent::ProfileFailed { key, message }
+                                };
+                                let _ = tx.send(event);
+                            }
+                        };
+                        ticket.run(work).await;
+                    });
+                } else {
+                    let _ = self.tx.scoped(ticket).send(TgEvent::ProfileFailed {
+                        key,
+                        message: "Профиль недоступен".into(),
+                    });
+                }
+            }
+            TgCommand::ProfilePhoto(key, ticket) => {
+                if !ticket.is_current() {
+                    return Ok(());
+                }
+                if let Ok(peer) = self.profile_peer(&key).await {
+                    let client = self.client.clone();
+                    let tx = self.tx.scoped(ticket.clone());
+                    self.avatar_tasks.spawn(async move {
+                        let work = async {
+                            if let Err(error) =
+                                crate::profiles::load_viewer_photo(&client, peer, &key, &tx).await
+                            {
+                                let _ = tx.send(TgEvent::ProfilePhotoFailed {
+                                    key,
+                                    message: error.to_string(),
+                                });
+                            }
+                        };
+                        ticket.run(work).await;
+                    });
+                } else {
+                    let _ = self.tx.scoped(ticket).send(TgEvent::ProfilePhotoFailed {
+                        key,
+                        message: "Фото профиля недоступно".into(),
+                    });
+                }
+            }
+            TgCommand::GiftMedia(key, gift_key, source, kind, size, ticket) => {
+                if !ticket.is_current() {
+                    return Ok(());
+                }
+                let client = self.client.clone();
+                let tx = self.tx.scoped(ticket.clone());
+                self.avatar_tasks.spawn(async move {
+                    ticket
+                        .run(crate::profiles::load_gift_media(
+                            client, key, gift_key, source, kind, size, tx,
+                        ))
+                        .await;
+                });
+            }
+            TgCommand::ForgetAvatars(ids) => {
+                for id in ids {
+                    self.avatar_requests.remove(&id);
+                }
+            }
+            TgCommand::Thumbnail(id, mid, ticket) => {
+                self.load_detail(id, mid, true, Some(ticket))?
+            }
+            TgCommand::ResolveReply(id, mid) => self.load_detail(id, mid, false, None)?,
             TgCommand::JumpReply(id, mid) => {
                 let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
                 let source = self
@@ -1008,9 +1486,13 @@ impl Worker {
                     access: ChannelAccess::ReadOnly,
                 });
             }
-            TgCommand::ViewPhoto(id, mid) => {
+            TgCommand::ViewPhoto(id, mid, ticket) => {
+                if !ticket.is_current() {
+                    return Ok(());
+                }
+                let tx = self.tx.scoped(ticket.clone());
                 let Some(peer) = self.peers.get(&id).copied() else {
-                    let _ = self.tx.send(TgEvent::PhotoFailed {
+                    let _ = tx.send(TgEvent::PhotoFailed {
                         peer_id: id,
                         message_id: mid,
                         message: "Чат не найден.".into(),
@@ -1018,31 +1500,33 @@ impl Worker {
                     return Ok(());
                 };
                 let client = self.client.clone();
-                let tx = self.tx.clone();
-                tokio::spawn(async move {
-                    let result = tokio::time::timeout(
-                        Duration::from_secs(45),
-                        fetch_photo(client, peer, mid),
-                    )
-                    .await;
-                    let event = match result {
-                        Ok(Ok(pixels)) => TgEvent::PhotoReady {
-                            peer_id: id,
-                            message_id: mid,
-                            pixels,
-                        },
-                        Ok(Err(e)) => TgEvent::PhotoFailed {
-                            peer_id: id,
-                            message_id: mid,
-                            message: e.to_string(),
-                        },
-                        Err(_) => TgEvent::PhotoFailed {
-                            peer_id: id,
-                            message_id: mid,
-                            message: "Telegram не загрузил фото вовремя.".into(),
-                        },
+                self.avatar_tasks.spawn(async move {
+                    let work = async {
+                        let result = tokio::time::timeout(
+                            Duration::from_secs(45),
+                            fetch_photo(client, peer, mid),
+                        )
+                        .await;
+                        let event = match result {
+                            Ok(Ok(pixels)) => TgEvent::PhotoReady {
+                                peer_id: id,
+                                message_id: mid,
+                                pixels: pixels.into(),
+                            },
+                            Ok(Err(e)) => TgEvent::PhotoFailed {
+                                peer_id: id,
+                                message_id: mid,
+                                message: e.to_string(),
+                            },
+                            Err(_) => TgEvent::PhotoFailed {
+                                peer_id: id,
+                                message_id: mid,
+                                message: "Telegram не загрузил фото вовремя.".into(),
+                            },
+                        };
+                        let _ = tx.send_media(event).await;
                     };
-                    let _ = tx.send(event);
+                    ticket.run(work).await;
                 });
             }
             TgCommand::OpenUsername(username) => {
@@ -1082,6 +1566,7 @@ impl Worker {
                         },
                         saved: false,
                         channel: ChannelAccess::for_peer(&peer),
+                        no_photo: crate::presence::no_photo(&peer),
                         messages: vec![],
                         presence: crate::presence::for_peer(&peer).0,
                         online: crate::presence::for_peer(&peer).1,
@@ -1248,6 +1733,82 @@ impl Worker {
                         }
                     }
                 }
+            }
+            TgCommand::SendFormatted(id, text, reply, entities) => {
+                let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
+                let m = self
+                    .client
+                    .send_message(
+                        peer,
+                        grammers_client::message::InputMessage::new()
+                            .text(text)
+                            .fmt_entities(entities)
+                            .reply_to(reply),
+                    )
+                    .await?;
+                let _ = self.tx.send(TgEvent::MessageSent {
+                    peer_id: id,
+                    message: message(&m),
+                });
+            }
+            TgCommand::EditFormatted(id, mid, text, entities) => {
+                let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
+                self.client
+                    .edit_message(
+                        peer,
+                        mid,
+                        grammers_client::message::InputMessage::new()
+                            .text(text)
+                            .fmt_entities(entities),
+                    )
+                    .await?;
+                if let Some(m) = self
+                    .client
+                    .get_messages_by_id(peer, &[mid])
+                    .await?
+                    .into_iter()
+                    .flatten()
+                    .next()
+                {
+                    let _ = self.tx.send(TgEvent::MessageEdited {
+                        peer_id: id,
+                        message: message(&m),
+                    });
+                }
+                let _ = self.tx.send(TgEvent::EditCompleted {
+                    peer_id: id,
+                    message_id: mid,
+                });
+            }
+            TgCommand::SendFiles(id, paths, caption, reply) => {
+                let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
+                for (index, path) in paths.iter().enumerate() {
+                    let _ = self.tx.send(TgEvent::OperationDone {
+                        message: format!(
+                            "Загрузка {}/{}: {}",
+                            index + 1,
+                            paths.len(),
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ),
+                    });
+                    let file = self.client.upload_file(path).await?;
+                    let m = self
+                        .client
+                        .send_message(
+                            peer,
+                            grammers_client::message::InputMessage::new()
+                                .text(if index == 0 { caption.as_str() } else { "" })
+                                .file(file)
+                                .reply_to(reply),
+                        )
+                        .await?;
+                    let _ = self.tx.send(TgEvent::MessageSent {
+                        peer_id: id,
+                        message: message(&m),
+                    });
+                    let _ = self.tx.send(TgEvent::FileSent { path: path.clone() });
+                }
+                let _ = self.tx.send(TgEvent::FilesSent);
             }
             TgCommand::SendMessage(id, text, reply) => {
                 let peer = *self.peers.get(&id).ok_or("Чат не найден.")?;
@@ -1418,6 +1979,20 @@ impl Worker {
 #[cfg(test)]
 mod event_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn background_resize_preserves_aspect_ratio_without_upscaling() {
+        let large = image::RgbaImage::from_pixel(1024, 512, image::Rgba([20, 80, 160, 255]));
+        let resized = resize_image(large, 256).await.unwrap();
+        assert_eq!(resized.dimensions(), (256, 128));
+        let small = image::RgbaImage::from_pixel(32, 16, image::Rgba([40, 90, 170, 255]));
+        let resized = resize_image(small.clone(), 960).await.unwrap();
+        assert_eq!(
+            resized, small,
+            "small previews must not allocate an upscaled buffer"
+        );
+    }
+
     #[test]
     fn bridge_coalesces_notifications_and_stays_idle_without_events() {
         let (bridge, _commands, events) = TelegramBridge::offline_for_rendering();
@@ -1516,14 +2091,22 @@ async fn thumbnail_image(
             "s" => 4,
             _ => 5,
         });
-    let pixels = if let Some(thumb) = thumb {
-        download_image(client, &thumb, 3 * 1024 * 1024, 8192).await?
+    if let Some(thumb) = thumb {
+        download_image_fit(client, &thumb, 3 * 1024 * 1024, 8192, 960).await
     } else {
-        download_image(client, &media, 4 * 1024 * 1024, 8192).await?
-    };
+        download_image_fit(client, &media, 4 * 1024 * 1024, 8192, 960).await
+    }
+}
+
+// Reuse the runtime's bounded blocking pool instead of adding an OS thread
+// for each image. Skia images/models are still created on the Slint thread.
+pub(crate) async fn resize_image(pixels: image::RgbaImage, limit: u32) -> Result<image::RgbaImage> {
+    if pixels.width() <= limit && pixels.height() <= limit {
+        return Ok(pixels);
+    }
     tokio::task::spawn_blocking(move || {
         image::DynamicImage::ImageRgba8(pixels)
-            .resize(960, 960, image::imageops::FilterType::Lanczos3)
+            .resize(limit, limit, image::imageops::FilterType::Lanczos3)
             .into_rgba8()
     })
     .await
@@ -1539,32 +2122,64 @@ async fn fetch_photo(client: Client, peer: PeerRef, mid: i32) -> Result<image::R
         .next()
         .ok_or("Фото больше недоступно.")?;
     let media = message.media().ok_or("Фото больше недоступно.")?;
-    download_image(&client, &media, 32 * 1024 * 1024, 8192).await
+    // The viewer needs display pixels, not an unbounded original. Saving uses
+    // the separate original-file download path.
+    download_image_fit(&client, &media, 32 * 1024 * 1024, 8192, 2560).await
 }
 
-async fn download_image(
+pub(crate) async fn download_image(
     client: &Client,
     media: &impl grammers_client::media::Downloadable,
     byte_limit: usize,
     dimension_limit: u32,
 ) -> Result<image::RgbaImage> {
+    download_image_fit(client, media, byte_limit, dimension_limit, dimension_limit).await
+}
+
+pub(crate) async fn download_image_fit(
+    client: &Client,
+    media: &impl grammers_client::media::Downloadable,
+    byte_limit: usize,
+    dimension_limit: u32,
+    output_limit: u32,
+) -> Result<image::RgbaImage> {
     let mut download = client.iter_download(media);
     let mut bytes = Vec::new();
     while let Some(chunk) = download.next().await? {
-        if bytes.len() + chunk.len() > byte_limit {
+        if bytes.len().saturating_add(chunk.len()) > byte_limit {
             return Err("Фото слишком большое для просмотра. Его можно сохранить как файл.".into());
         }
         bytes.extend(chunk);
     }
+    let permit = crate::media::DECODE_SLOTS.acquire().await?;
     tokio::task::spawn_blocking(move || -> Result<image::RgbaImage> {
+        let _permit = permit;
+        let probe = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format()?;
+        let (width, height) = probe.into_dimensions()?;
+        if width > dimension_limit
+            || height > dimension_limit
+            || !crate::media::rgba_fits(width, height)
+        {
+            return Err("Фото слишком большое для просмотра. Его можно сохранить как файл.".into());
+        }
         let mut reader =
             image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
         let mut limits = image::Limits::default();
-        limits.max_alloc = Some(128 * 1024 * 1024);
+        limits.max_alloc = Some(crate::media::DECODED_IMAGE_BYTES);
         limits.max_image_width = Some(dimension_limit);
         limits.max_image_height = Some(dimension_limit);
         reader.limits(limits);
-        Ok(reader.decode()?.to_rgba8())
+        let decoded = reader.decode()?;
+        let fitted = if width > output_limit || height > output_limit {
+            decoded.resize(
+                output_limit,
+                output_limit,
+                image::imageops::FilterType::Lanczos3,
+            )
+        } else {
+            decoded
+        };
+        Ok(fitted.into_rgba8())
     })
     .await?
 }
@@ -1634,8 +2249,8 @@ async fn run(mut commands: async_mpsc::UnboundedReceiver<TgCommand>, tx: EventSi
             _ = w.avatar_tasks.join_next(), if !w.avatar_tasks.is_empty() => {}
             cmd = commands.recv() => {
                 let Some(cmd) = cmd else { break };
-                let sending = matches!(cmd, TgCommand::SendMessage(..) | TgCommand::SendFile(..));
-                let timeout = if matches!(cmd, TgCommand::SendFile(..) | TgCommand::Download(..)) { 600 } else { 45 };
+                let sending = matches!(cmd, TgCommand::SendMessage(..) | TgCommand::SendFormatted(..) | TgCommand::SendFile(..) | TgCommand::SendFiles(..));
+                let timeout = if matches!(cmd, TgCommand::SendFile(..) | TgCommand::SendFiles(..) | TgCommand::Download(..)) { 600 } else { 45 };
                 let result = tokio::time::timeout(Duration::from_secs(timeout), w.command(cmd)).await;
                 let error = match result { Ok(Ok(())) => None, Ok(Err(e)) => Some(e.to_string()), Err(_) => Some("Telegram не ответил вовремя. Проверьте состояние перед повторной отправкой.".into()) };
                 if let Some(message) = error {

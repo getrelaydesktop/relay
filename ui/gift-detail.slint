@@ -1,0 +1,415 @@
+// Telegram Desktop v7.4.1, 157f5cfc85e2dd1fa67f129a5e31a81db5ddeb19 (GPL-3.0).
+// ReceiptCreditsBox -> GenericCreditsEntryCover/Body -> AddStarGiftTable.
+// Metrics: ui/effects/credits.style, giveaway/giveaway.style; lib_ui styles
+// and TableLayout at 42c6f1e88db81e6d9e8006f3e7b1c3ba39f9cac4.
+// Standalone modal CONTENT, not a Window or a profile child. The parent owns
+// centering, the dim layer and GiftRow population. Media here is STATIC.
+import { GiftRow } from "gifts.slint";
+import { Theme } from "theme.slint";
+import { VectorIcon } from "icons/vector-icons.slint";
+import { RippleSurface } from "motion.slint";
+
+// gifts.slint does not export GiftBackdrop. Unlike the profile's small-card
+// pattern this uses PatternBgPoints(), WITHOUT the width/3 extension.
+component ReceiptBackdrop inherits Rectangle {
+    in property <GiftRow> gift;
+    clip: true;
+    background: gift.edge;
+    // CreateTopBgGradient: centered QRadialGradient, radius = height / 2.
+    Rectangle {
+        x: (parent.width - self.width) / 2; y: 0px;
+        width: parent.height; height: parent.height;
+        background: @radial-gradient(circle, root.gift.center, root.gift.edge 70.710678%);
+    }
+    if root.gift.has-pattern : Rectangle {
+        width: parent.width; height: 170px; // uniqueGiftSubtitleTop: patternAreaHeight
+        for point in [
+            {x: 0.5, y: 0.066, scale: 0.7, alpha: 0.2},
+            {x: 0.177, y: 0.168, scale: 0.7, alpha: 0.2}, {x: 0.822, y: 0.168, scale: 0.7, alpha: 0.2},
+            {x: 0.37, y: 0.168, scale: 0.85, alpha: 0.3}, {x: 0.63, y: 0.168, scale: 0.85, alpha: 0.3},
+            {x: 0.277, y: 0.308, scale: 0.7, alpha: 0.3}, {x: 0.723, y: 0.308, scale: 0.7, alpha: 0.3},
+            {x: 0.13, y: 0.42, scale: 0.7, alpha: 0.2}, {x: 0.87, y: 0.42, scale: 0.7, alpha: 0.2},
+            {x: 0.27, y: 0.533, scale: 0.85, alpha: 0.3}, {x: 0.73, y: 0.533, scale: 0.85, alpha: 0.3},
+            {x: 0.2, y: 0.73, scale: 0.7, alpha: 0.2}, {x: 0.8, y: 0.73, scale: 0.7, alpha: 0.2},
+            {x: 0.302, y: 0.825, scale: 0.85, alpha: 0.3}, {x: 0.698, y: 0.825, scale: 0.85, alpha: 0.3},
+            {x: 0.5, y: 0.876, scale: 0.85, alpha: 0.2},
+            {x: 0.144, y: 0.936, scale: 0.7, alpha: 0.2}, {x: 0.856, y: 0.936, scale: 0.7, alpha: 0.2},
+        ] : Image {
+            x: floor(point.x * parent.width / 1px) * 1px - self.width / 2;
+            y: floor(point.y * parent.height / 1px) * 1px - self.height / 2;
+            width: 40px * point.scale; height: self.width;
+            source: root.gift.pattern; colorize: root.gift.pattern-color;
+            opacity: point.alpha; image-fit: contain;
+        }
+    }
+}
+
+component ReceiptAvatar inherits Rectangle {
+    in property <image> photo;
+    in property <bool> has-photo;
+    in property <string> initials;
+    in property <bool> hidden;
+    border-radius: self.width / 2; clip: true;
+    // GiftRow has no peer palette/id: do not derive an invented avatar color.
+    background: root.hidden ? @linear-gradient(180deg, #a767ff, #db5c9d) : Theme.badge-bg;
+    if root.has-photo && !root.hidden : Image {
+        width: parent.width; height: parent.height; source: root.photo; image-fit: cover;
+    }
+    if !root.has-photo && !root.hidden : Text {
+        width: parent.width; height: parent.height; text: root.initials;
+        font-size: 12px; color: white; horizontal-alignment: center; vertical-alignment: center;
+    }
+    // Hidden author deliberately has no name/initials/avatar leakage. The
+    // exact EmptyUserpic hidden-author artwork is not available in ui/icons.
+    if root.hidden : VectorIcon {
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        width: 16px; height: 16px; name: "profile"; tint: white;
+    }
+}
+
+// UniqueGiftMessageBubble::Path, including the original cubic tail. Shared
+// fill/outline contour; 1/6 white fill and 1/2 white outline, lineWidth = 1.
+component ReceiptMessageShape inherits Rectangle {
+    private property <float> l: 4.5;
+    private property <float> t: 0.5;
+    private property <float> r: self.width / 1px - 0.5;
+    private property <float> b: self.height / 1px - 0.5;
+    private property <float> radius: min(self.height / 2px, 10) - 0.5;
+    private property <float> arc: self.radius * 0.5522847498;
+    Path {
+        width: parent.width; height: parent.height;
+        viewbox-width: self.width / 1px; viewbox-height: self.height / 1px;
+        fill: #ffffff2b; stroke: #ffffff80; stroke-width: 1px; anti-alias: true;
+        MoveTo { x: root.l + root.radius; y: root.t; }
+        LineTo { x: root.r - root.radius; y: root.t; }
+        CubicTo { control-1-x: root.r - root.radius + root.arc; control-1-y: root.t; control-2-x: root.r; control-2-y: root.t + root.radius - root.arc; x: root.r; y: root.t + root.radius; }
+        LineTo { x: root.r; y: root.b - root.radius; }
+        CubicTo { control-1-x: root.r; control-1-y: root.b - root.radius + root.arc; control-2-x: root.r - root.radius + root.arc; control-2-y: root.b; x: root.r - root.radius; y: root.b; }
+        LineTo { x: root.l + root.radius; y: root.b; }
+        CubicTo { control-1-x: root.l + root.radius * 0.7668863569; control-1-y: root.b; control-2-x: root.l + root.radius * 0.5524008667; control-2-y: root.b - 5 * 0.4270352921; x: root.l + root.radius * 0.3823594269; y: root.b - 5 * 0.4270352921; }
+        CubicTo { control-1-x: root.l + root.radius * 0.2123168130; control-1-y: root.b - 5 * 0.1595529381; control-2-x: root.l - 4 * 0.0073620031; control-2-y: root.b; x: root.l - 4 * 0.7999998407; y: root.b; }
+        LineTo { x: root.l - 4; y: root.b; }
+        CubicTo { control-1-x: root.l - 4; control-1-y: root.b; control-2-x: root.l - 4; control-2-y: root.b - 5 * 0.0719294110; x: root.l - 4; y: root.b - 5 * 0.0719294110; }
+        CubicTo { control-1-x: root.l - 4 * 0.5459278926; control-1-y: root.b - 5 * 0.1729529402; control-2-x: root.l; control-2-y: root.b - 5 * 0.4158705899; x: root.l; y: root.b - 5; }
+        LineTo { x: root.l; y: root.t + root.radius; }
+        CubicTo { control-1-x: root.l; control-1-y: root.t + root.radius - root.arc; control-2-x: root.l + root.radius - root.arc; control-2-y: root.t; x: root.l + root.radius; y: root.t; }
+        Close { }
+    }
+}
+component ReceiptMessage inherits Rectangle {
+    in property <GiftRow> gift;
+    private property <length> text-width: min(natural.preferred-width, max(1px, self.width - 40px - 20px - 4px - 12px));
+    private property <length> body-width: root.text-width + 12px;
+    private property <length> body-height: max(20px, message.preferred-height + 12px);
+    private property <length> left: (self.width - 20px - 4px - root.body-width) / 2;
+    height: 20px + root.body-height; // uniqueGiftMessagePadding top/bottom = 10
+    natural := StyledText { visible: false; text: root.gift.message; default-font-size: 12px; }
+    ReceiptAvatar {
+        x: root.left; y: parent.height - 10px - self.height; width: 20px; height: 20px;
+        photo: root.gift.sender-avatar; has-photo: root.gift.has-sender-avatar;
+        initials: root.gift.sender-initials; hidden: root.gift.sender-hidden;
+    }
+    ReceiptMessageShape { x: root.left + 20px; y: 10px; width: root.body-width + 4px; height: root.body-height; }
+    message := StyledText {
+        x: root.left + 20px + 4px + 6px; y: 16px;
+        width: root.text-width; height: self.preferred-height; text: root.gift.message;
+        default-font-size: 12px; default-color: white; link-color: white;
+        // Entity formatting is native StyledText, not markdown reconstruction.
+        link-clicked(url) => { /* No implicit external navigation from a receipt. */ }
+    }
+}
+
+component ReceiptChip inherits Rectangle {
+    in property <string> text;
+    private property <color> ink: text == "Uncommon" ? #40a920 : text == "Rare" ? #11aabe : text == "Epic" ? #955cdb : text == "Legendary" ? #bf7600 : (Theme.dark ? #6ab3f3 : #168acd);
+    width: label.preferred-width + 12px; height: 18px; border-radius: 9px;
+    background: root.text == "Uncommon" || root.text == "Rare" || root.text == "Epic" || root.text == "Legendary" ? root.ink.with-alpha(0.15) : (Theme.dark ? #1d2a39 : #e3f1fa);
+    accessible-role: button; accessible-enabled: false;
+    accessible-label: root.text + ", предпросмотр недоступен";
+    label := Text { width: parent.width; height: parent.height; text: root.text; font-size: 12px; color: root.ink; horizontal-alignment: center; overflow: elide; }
+}
+
+// TableLayout: 1px outer/grid border, measured label column (minimum 91,
+// maximum half of width - 3 borders), 6px radius, NOT a list of loose labels.
+component ReceiptRow inherits Rectangle {
+    in property <bool> shown: true;
+    in property <length> value-left;
+    in property <string> label;
+    in property <string> value;
+    in property <string> rarity;
+    in property <bool> peer;
+    in property <bool> hidden;
+    in property <string> initials;
+    in property <image> avatar;
+    in property <bool> has-avatar;
+    out property <length> label-natural-width: label-measure.preferred-width + 26px;
+    private property <length> margin-x: peer ? 11px : 13px;
+    private property <length> value-top: peer ? 6px : 9px;
+    private property <length> value-bottom: peer ? 4px : 9px;
+    private property <length> chip-width: rarity == "" ? 0px : chip-measure.preferred-width + 12px;
+    private property <length> space-width: space.preferred-width;
+    private property <length> available: max(1px, self.width - value-left - 1px - 2 * margin-x);
+    private property <bool> stacked-chip: rarity != "" && value-measure.preferred-width + space-width + chip-width > available;
+    private property <length> value-height: peer ? max(24px, value-text.preferred-height + 4px) : (root.stacked-chip ? value-text.preferred-height + 18px : max(value-text.preferred-height, rarity == "" ? 0px : 18px));
+    height: shown ? max(20px + label-text.preferred-height, value-top + value-height + value-bottom) + 1px : 0px;
+    visible: shown;
+    label-measure := Text { visible: false; text: root.label; font-size: 12px; font-weight: 600; }
+    value-measure := Text { visible: false; text: root.value; font-size: 12px; }
+    chip-measure := Text { visible: false; text: root.rarity; font-size: 12px; }
+    space := Text { visible: false; text: " "; font-size: 13px; }
+    Rectangle { width: root.value-left - 1px; height: parent.height; background: Theme.hover; }
+    Rectangle { x: root.value-left - 1px; width: 1px; height: parent.height; background: Theme.border; }
+    Rectangle { y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.border; }
+    label-text := Text {
+        x: 13px; y: 10px; width: max(1px, root.value-left - 27px); height: self.preferred-height;
+        text: root.label; font-size: 12px; font-weight: 600; color: Theme.dark ? #e9e8e8 : #222222; wrap: word-wrap;
+    }
+    if root.peer : ReceiptAvatar {
+        x: root.value-left + root.margin-x - 1px; y: root.value-top - 1px; width: 24px; height: 24px;
+        photo: root.avatar; has-photo: root.has-avatar; initials: root.initials; hidden: root.hidden;
+    }
+    value-text := Text {
+        x: root.value-left + root.margin-x + (root.peer ? 32px : 0px);
+        y: root.value-top + (root.peer ? 4px : 0px);
+        width: max(1px, root.available - (root.peer ? 32px : 0px) - (root.rarity == "" || root.stacked-chip ? 0px : root.chip-width + root.space-width));
+        height: self.preferred-height; text: root.hidden ? "Имя скрыто" : root.value;
+        font-size: 12px; color: root.peer && !root.hidden ? (Theme.dark ? #6ab3f3 : #168acd) : Theme.ink; wrap: word-wrap;
+    }
+    if root.rarity != "" : ReceiptChip {
+        // Below the wrapped value only when the original inline arrangement
+        // cannot fit. This is the narrow-window adaptation, not a new metric.
+        x: root.stacked-chip ? value-text.x : value-text.x + min(value-text.preferred-width, value-text.width) + root.space-width;
+        y: root.value-top + (root.stacked-chip ? value-text.height : 0px);
+        width: min(root.chip-width, root.available); text: root.rarity;
+    }
+}
+
+export component GiftDetail inherits Rectangle {
+    in property <GiftRow> gift;
+    in property <bool> active;
+    // A content-fit input, not Rectangle's conflicting layout max-height.
+    in property <length> available-height: 640px;
+    out property <length> natural-height: content.height + 75px;
+    callback closed();
+    callback action(string);
+    width: 364px; height: min(root.natural-height, root.available-height);
+    border-radius: 8px; background: Theme.surface; clip: true;
+    forward-focus: keys;
+    private property <bool> unsupported-primary: (!gift.collectible && gift.mine && gift.can-upgrade) || (gift.collectible && gift.resale && !gift.mine);
+    // value is appraisal/Stars value, NOT necessarily a resale ask. GiftRow
+    // has no separate resale price/currency: never present an invented cost.
+    private property <string> primary-text: gift.collectible && gift.resale && !gift.mine ? "Купить" : root.unsupported-primary ? "Улучшить" : "OK";
+    private property <bool> scrolled: scroll.viewport-y < 0px;
+    private property <string> gift-identity: root.gift.key;
+    changed active => { if root.active { keys.focus(); } }
+    changed gift-identity => { scroll.viewport-y = 0px; if root.active { keys.focus(); } }
+    pure function triple(value: int) -> string {
+        return value < 10 ? "00" + value : value < 100 ? "0" + value : "" + value;
+    }
+    // Lang::FormatCountDecimal's English grouping, without turning the
+    // caller's integer into a guessed serial from gift.detail or gift.url.
+    pure function gift-number(value: int) -> string {
+        if value < 1000 { return "" + value; }
+        let units = root.triple(mod(value, 1000));
+        let thousands = floor(value / 1000);
+        if value < 1000000 { return thousands + "," + units; }
+        let middle = root.triple(mod(thousands, 1000));
+        let millions = floor(value / 1000000);
+        if value < 1000000000 { return millions + "," + middle + "," + units; }
+        return floor(value / 1000000000) + "," + root.triple(mod(millions, 1000)) + "," + middle + "," + units;
+    }
+    public function scroll-by(delta: length) {
+        scroll.viewport-y = clamp(scroll.viewport-y + delta, min(0px, scroll.height - content.height), 0px);
+    }
+    TouchArea { width: parent.width; height: parent.height; }
+    keys := FocusScope {
+        width: parent.width; height: parent.height;
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.closed(); return accept; }
+            if event.text == Key.Return || event.text == " " { if !root.unsupported-primary { root.closed(); } return accept; }
+            if event.text == Key.DownArrow { root.scroll-by(-6px); return accept; }
+            if event.text == Key.UpArrow { root.scroll-by(6px); return accept; }
+            if event.text == Key.PageDown { root.scroll-by(-scroll.height + 48px); return accept; }
+            if event.text == Key.PageUp { root.scroll-by(scroll.height - 48px); return accept; }
+            return reject;
+        }
+        scroll := Flickable {
+            width: parent.width; height: max(0px, parent.height - 75px);
+            viewport-width: self.width; viewport-height: max(self.height, content.height);
+            content := Rectangle {
+                width: scroll.width;
+                height: cover.height + body.height;
+                cover := Rectangle {
+                    width: parent.width;
+                    height: root.gift.collectible ? 170px + subtitle.preferred-height + (root.gift.has-message ? cover-message.height : 20px) : 18px + 125px + 12px + regular-title.preferred-height + 6px;
+                    if root.gift.collectible : ReceiptBackdrop { width: parent.width; height: parent.height; gift: root.gift; }
+                    Image {
+                        x: (parent.width - self.width) / 2;
+                        y: root.gift.collectible ? 20px : 10px; width: 120px; height: 120px;
+                        source: root.gift.photo; visible: root.gift.has-photo; image-fit: contain;
+                    }
+                    // Regular: three 6px cover skips, 125px sticker space;
+                    // body then inserts two 6px skips before the title.
+                    regular-title := Text {
+                        visible: !root.gift.collectible; x: 24px; y: 155px; width: max(1px, parent.width - 48px); height: self.preferred-height;
+                        text: root.gift.title == "" ? (root.gift.mine ? "Полученный подарок" : "Подарок") : root.gift.title;
+                        font-size: 16px; font-weight: 600; color: Theme.ink; horizontal-alignment: center; wrap: word-wrap;
+                    }
+                    // UniqueGiftCover::layoutContent groups title and #number
+                    // on one line with normalFont's measured space. Slint's
+                    // vertical text alignment is not Qt's font-ascent API.
+                    unique-title-measure := Text { visible: false; text: root.gift.title; font-size: 16px; font-weight: 600; }
+                    number-measure := Text { visible: false; text: root.gift.number > 0 ? "#" + root.gift-number(root.gift.number) : ""; font-size: 13px; font-weight: 600; }
+                    title-space := Text { visible: false; text: " "; font-size: 13px; }
+                    if root.gift.collectible : HorizontalLayout {
+                        x: 20px; y: 140px; width: max(1px, parent.width - 40px); height: unique-title-measure.preferred-height;
+                        spacing: root.gift.number > 0 ? title-space.preferred-width : 0px; alignment: center;
+                        Text { text: root.gift.title; font-size: 16px; font-weight: 600; color: white; overflow: elide; horizontal-stretch: 0; }
+                        Text { text: number-measure.text; font-size: 13px; font-weight: 600; color: root.gift.text-color; vertical-alignment: center; horizontal-stretch: 0; }
+                    }
+                    subtitle := Text {
+                        visible: root.gift.collectible; x: 20px; y: 170px; width: max(1px, parent.width - 40px); height: self.preferred-height;
+                        text: root.gift.model; font-size: 13px;
+                        color: root.gift.text-color; horizontal-alignment: center; wrap: word-wrap;
+                        // An on-sale badge requires a distinct ask price, absent
+                        // from GiftRow; keep the truthful model subtitle.
+                    }
+                    cover-message := ReceiptMessage {
+                        visible: root.gift.collectible && root.gift.has-message;
+                        y: 170px + subtitle.preferred-height; width: parent.width; gift: root.gift;
+                    }
+                }
+                body := Rectangle {
+                    y: cover.height; width: parent.width;
+                    height: table.y + table.height + 4px + 6px + 6px;
+                    about := Text {
+                        visible: !root.gift.collectible && root.gift.mine;
+                        x: 24px; y: 6px; width: max(1px, parent.width - 48px);
+                        height: self.visible ? self.preferred-height : 0px;
+                        text: "Этот подарок можно оставить в своём профиле."; font-size: 13px; color: Theme.ink;
+                        horizontal-alignment: center; wrap: word-wrap;
+                    }
+                    table := Rectangle {
+                        x: 24px; y: root.gift.collectible ? 12px + 6px + 6px + 4px : 6px + 6px + 4px + about.height + (about.visible ? 6px : 0px);
+                        width: max(1px, parent.width - 48px);
+                        height: 1px + owner-row.height + sender-row.height + date-row.height + model-row.height + symbol-row.height + backdrop-row.height + availability-row.height + value-row.height + status-row.height + message-row.height;
+                        border-width: 1px; border-color: Theme.border; border-radius: 6px; clip: true;
+                        private property <length> value-left: 2px + min(round((self.width - 3px) / 2px) * 1px, max(91px,
+                            owner-row.shown ? owner-row.label-natural-width : 0px, sender-row.shown ? sender-row.label-natural-width : 0px,
+                            date-row.shown ? date-row.label-natural-width : 0px, model-row.shown ? model-row.label-natural-width : 0px,
+                            symbol-row.shown ? symbol-row.label-natural-width : 0px, backdrop-row.shown ? backdrop-row.label-natural-width : 0px,
+                            availability-row.shown ? availability-row.label-natural-width : 0px, value-row.shown ? value-row.label-natural-width : 0px,
+                            status-row.shown ? status-row.label-natural-width : 0px));
+                        owner-row := ReceiptRow {
+                            x: 1px; y: 1px; width: parent.width - 2px; value-left: table.value-left - 1px;
+                            shown: root.gift.collectible && (root.gift.owner != "" || root.gift.owner-address != "");
+                            label: "Владелец"; value: root.gift.owner != "" ? root.gift.owner : root.gift.owner-address;
+                            peer: root.gift.owner != "" && (root.gift.has-owner-avatar || root.gift.owner-initials != "");
+                            initials: root.gift.owner-initials; avatar: root.gift.owner-avatar; has-avatar: root.gift.has-owner-avatar;
+                        }
+                        sender-row := ReceiptRow {
+                            x: 1px; y: owner-row.y + owner-row.height; width: parent.width - 2px; value-left: table.value-left - 1px;
+                            shown: !root.gift.collectible && root.gift.show-sender && (root.gift.sender-hidden || root.gift.sender != "");
+                            label: "Отправитель"; value: root.gift.sender; peer: true; hidden: root.gift.sender-hidden;
+                            initials: root.gift.sender-initials; avatar: root.gift.sender-avatar; has-avatar: root.gift.has-sender-avatar;
+                        }
+                        date-row := ReceiptRow {
+                            x: 1px; y: sender-row.y + sender-row.height; width: parent.width - 2px; value-left: table.value-left - 1px;
+                            shown: !root.gift.collectible && root.gift.date != ""; label: "Дата"; value: root.gift.date;
+                        }
+                        model-row := ReceiptRow {
+                            x: 1px; y: date-row.y + date-row.height; width: parent.width - 2px; value-left: table.value-left - 1px;
+                            shown: root.gift.collectible && root.gift.model != ""; label: "Модель"; value: root.gift.model; rarity: root.gift.model-rarity;
+                        }
+                        symbol-row := ReceiptRow {
+                            x: 1px; y: model-row.y + model-row.height; width: parent.width - 2px; value-left: table.value-left - 1px;
+                            shown: root.gift.collectible && root.gift.symbol != ""; label: "Узор"; value: root.gift.symbol; rarity: root.gift.symbol-rarity;
+                        }
+                        backdrop-row := ReceiptRow {
+                            x: 1px; y: symbol-row.y + symbol-row.height; width: parent.width - 2px; value-left: table.value-left - 1px;
+                            shown: root.gift.collectible && root.gift.backdrop != ""; label: "Фон"; value: root.gift.backdrop; rarity: root.gift.backdrop-rarity;
+                        }
+                        // Regular value precedes availability in AddStarGiftTable;
+                        // unique value follows it. The geometry preserves both.
+                        availability-row := ReceiptRow {
+                            x: 1px; y: backdrop-row.y + backdrop-row.height + (root.gift.collectible ? 0px : value-row.height);
+                            width: parent.width - 2px; value-left: table.value-left - 1px;
+                            shown: root.gift.availability != ""; label: root.gift.collectible ? "Количество" : "Доступность"; value: root.gift.availability;
+                        }
+                        value-row := ReceiptRow {
+                            x: 1px; y: backdrop-row.y + backdrop-row.height + (root.gift.collectible ? availability-row.height : 0px);
+                            width: parent.width - 2px; value-left: table.value-left - 1px;
+                            shown: root.gift.value != ""; label: "Стоимость"; value: root.gift.value;
+                            rarity: root.gift.collectible ? "Подробнее" : "";
+                        }
+                        status-row := ReceiptRow {
+                            x: 1px; y: root.gift.collectible ? value-row.y + value-row.height : availability-row.y + availability-row.height;
+                            width: parent.width - 2px; value-left: table.value-left - 1px;
+                            shown: !root.gift.collectible && root.gift.mine && root.gift.can-upgrade; label: "Статус"; value: "Неуникальный";
+                        }
+                        message-row := Rectangle {
+                            x: 1px; y: status-row.y + status-row.height; width: parent.width - 2px;
+                            visible: !root.gift.collectible && root.gift.has-message;
+                            height: self.visible ? regular-message.preferred-height + 18px + 1px : 0px;
+                            // A null-label row spans BOTH columns in TableLayout.
+                            regular-message := StyledText {
+                                x: 13px; y: 9px; width: max(1px, parent.width - 26px); height: self.preferred-height;
+                                text: root.gift.message; default-font-size: 12px; default-color: Theme.ink; link-color: Theme.accent;
+                                link-clicked(url) => { /* Navigation is not implemented. */ }
+                            }
+                        }
+                    }
+                    // SavedStarGiftEntry also has savedToProfile, which is not
+                    // in GiftRow. Do not infer visibility from mine or pinned,
+                    // or invent a working Hide/Show link. The visibility hint
+                    // and external AttachGiftSenderBadge need parent data/API.
+                }
+            }
+        }
+        // Responsive sticky title is shown ONLY after the cover scrolls away;
+        // normal-height receipts retain upstream cover coordinates unchanged.
+        if root.scrolled : Rectangle {
+            width: parent.width; height: min(48px, scroll.height); background: Theme.surface;
+            Text { x: 24px; width: max(1px, parent.width - 24px - 88px); height: parent.height; text: root.gift.title; font-size: 16px; font-weight: 600; color: Theme.ink; vertical-alignment: center; overflow: elide; }
+        }
+        footer := Rectangle {
+            y: parent.height - 75px; width: parent.width; height: 75px; background: Theme.surface;
+            Rectangle {
+                x: 22px; y: 11px; width: max(1px, parent.width - 44px); height: 42px; border-radius: 4px;
+                background: Theme.accent;
+                accessible-role: button; accessible-label: root.primary-text;
+                accessible-enabled: !root.unsupported-primary;
+                accessible-action-default => { if !root.unsupported-primary { root.closed(); } }
+                RippleSurface { width: parent.width; height: parent.height; border-radius: 4px; pressed: primary-hit.pressed && !root.unsupported-primary; press-x: primary-hit.mouse-x; press-y: primary-hit.mouse-y; ink: Theme.active-ripple; }
+                Text { y: 12px; width: parent.width; text: root.primary-text; font-size: 13px; font-weight: 600; color: white; opacity: root.unsupported-primary ? 0.5 : 1; horizontal-alignment: center; }
+                primary-hit := TouchArea { width: parent.width; height: parent.height; mouse-cursor: root.unsupported-primary ? default : pointer; clicked => { if !root.unsupported-primary { root.closed(); } } }
+            }
+        }
+        if root.unsupported-primary && primary-hit.has-hover : Rectangle {
+            x: 22px; y: max(48px, footer.y - self.height); width: max(1px, parent.width - 44px);
+            height: unavailable-label.preferred-height + 4px;
+            background: Theme.dark ? #16222d : #eef2f5;
+            border-width: 1px; border-color: Theme.dark ? #16222d : #c9d1db;
+            unavailable-label := Text {
+                x: 5px; y: 2px; width: max(1px, parent.width - 10px); height: self.preferred-height;
+                text: root.gift.collectible ? "Покупка подарков пока не поддерживается." : "Улучшение подарков пока не поддерживается.";
+                font-size: 13px; color: Theme.dark ? #d4e0ea : #5d6c80; wrap: word-wrap;
+            }
+        }
+        // uniqueCloseButton / uniqueMenuButton: 48x48 and 40x48, at right=0.
+        // All unsupported menu mutations are disabled, not fake successes.
+        if root.gift.collectible : Rectangle {
+            x: parent.width - 88px; width: 40px; height: 48px;
+            accessible-role: button; accessible-label: "Меню подарка недоступно"; accessible-enabled: false;
+            VectorIcon { x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; width: 5px; height: 21px; name: "more"; tint: root.scrolled ? Theme.icon-fg : white; opacity: 0.5; }
+        }
+        Rectangle {
+            x: parent.width - 48px; width: 48px; height: 48px;
+            accessible-role: button; accessible-label: "Закрыть подарок";
+            accessible-action-default => { root.closed(); }
+            RippleSurface { x: 4px; y: 4px; width: 40px; height: 40px; border-radius: 20px; pressed: close-hit.pressed; press-x: close-hit.mouse-x - 4px; press-y: close-hit.mouse-y - 4px; ink: root.gift.collectible && !root.scrolled ? #00000080 : Theme.ripple; }
+            VectorIcon { x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; width: 16px; height: 16px; name: "close"; tint: root.gift.collectible && !root.scrolled ? white : close-hit.has-hover ? Theme.icon-hover-fg : Theme.icon-fg; }
+            close-hit := TouchArea { width: parent.width; height: parent.height; mouse-cursor: pointer; clicked => { root.closed(); } }
+        }
+    }
+}
