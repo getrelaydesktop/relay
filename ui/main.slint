@@ -434,6 +434,47 @@ component Bubble inherits Rectangle {
     }
 }
 
+component ChatFoldersDialog inherits Rectangle {
+    in property <[FolderRow]> folders;
+    callback close-requested();
+    callback create-requested();
+    callback delete-requested(int);
+    background: Theme.surface;
+    border-radius: Theme.material ? 24px : 8px;
+    clip: true;
+
+    Rectangle { x: 0px; y: 0px; width: parent.width; height: 58px; background: Theme.surface;
+        IconButton { x: 8px; y: 9px; icon: "back"; label: "Back"; clicked => { root.close-requested(); } }
+        Text { x: 56px; y: 17px; text: "Chat Folders"; font-size: 16px; font-weight: 600; color: Theme.ink; }
+        IconButton { x: parent.width - 48px; y: 9px; icon: "close"; label: "Close"; clicked => { root.close-requested(); } }
+    }
+    Rectangle { x: 0px; y: 58px; width: parent.width; height: 1px; background: Theme.border; }
+    Flickable {
+        x: 0px; y: 59px; width: parent.width; height: parent.height - 59px;
+        viewport-width: self.width; viewport-height: self.height;
+        content-height: 330px + root.folders.length * 58px;
+        Rectangle { x: 0px; y: 0px; width: parent.width; height: 220px; background: Theme.dark ? #202c3b : #eef4fb;
+            Text { x: 20px; y: 24px; width: parent.width - 40px; text: "📁"; font-size: 52px; horizontal-alignment: center; }
+            Text { x: 18px; y: 94px; width: parent.width - 36px; text: "Create folders for different groups of chats\nand quickly switch between them."; color: Theme.muted; font-size: 13px; horizontal-alignment: center; wrap: word-wrap; }
+        }
+        Text { x: 22px; y: 240px; text: "My folders"; color: Theme.accent; font-size: 13px; font-weight: 600; }
+        for folder[index] in root.folders : Rectangle {
+            x: 0px; y: 264px + index * 58px; width: parent.width; height: 58px;
+            background: hit.has-hover ? Theme.hover : transparent;
+            VectorIcon { x: 20px; y: 15px; width: 24px; height: 24px; name: "folder"; tint: Theme.accent; }
+            Text { x: 60px; y: 10px; width: parent.width - 120px; text: folder.title; color: Theme.ink; font-size: 13px; font-weight: 600; overflow: elide; }
+            Text { x: 60px; y: 31px; width: parent.width - 120px; text: folder.unread > 0 ? "\{folder.unread} unread" : "Chat folder"; color: Theme.muted; font-size: 12px; }
+            IconButton { x: parent.width - 50px; y: 9px; icon: "trash"; label: "Delete folder"; clicked => { root.delete-requested(folder.id); } }
+            hit := TouchArea { width: parent.width; height: parent.height; mouse-cursor: pointer; }
+        }
+        ActionButton { x: 20px; y: 276px + root.folders.length * 58px; width: parent.width - 40px; height: 40px; text: "+  Create new folder"; primary: true; clicked => { root.create-requested(); } }
+        Text { x: 22px; y: 340px + root.folders.length * 58px; text: "Recommended folders"; color: Theme.accent; font-size: 13px; font-weight: 600; }
+        Text { x: 22px; y: 380px + root.folders.length * 58px; text: "Unread"; color: Theme.ink; font-size: 13px; font-weight: 600; }
+        Text { x: 22px; y: 401px + root.folders.length * 58px; text: "New messages from all chats"; color: Theme.muted; font-size: 12px; }
+        ActionButton { x: parent.width - 88px; y: 378px + root.folders.length * 58px; width: 68px; height: 34px; text: "Add"; clicked => { root.create-requested(); } }
+    }
+}
+
 export component Desktop inherits Window {
     in-out property <bool> profile-open;
     in-out property <string> profile-key;
@@ -522,7 +563,7 @@ export component Desktop inherits Window {
     in-out property <float> photo-zoom: 1;
     in-out property <bool> has-chat: false;
     in-out property <bool> show-chat: false;
-    in-out property <bool> settings-open: false;
+    in-out property <bool> folders-open: false;
     in-out property <int> settings-page: 0;
     in property <string> settings-error;
 
@@ -2040,11 +2081,22 @@ export component Desktop inherits Window {
                 profile-requested => { Theme.open-profile("self"); }
                 gifts-changed => { root.settings-changed(); }
                 appearance-requested => { root.settings-page = 1; }
-                folders-requested => { root.settings-open = false; }
+                folders-requested => { root.settings-open = false; root.folders-open = true; }
                 logout-requested => {
                     root.settings-open = false;
                     root.auth-logout();
                 }
+            }
+            ChatFoldersDialog {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: min(392px, parent.width - 24px);
+                height: min(620px, parent.height - 32px);
+                visible: root.folders-open;
+                folders: root.folders;
+                close-requested => { root.folders-open = false; }
+                create-requested => { root.folders-open = false; }
+                delete-requested(id) => { }
             }
             Rectangle {
                 y: 54px; width: parent.width; height: parent.height - 54px;
