@@ -511,8 +511,15 @@ export component Desktop inherits Window {
     out property <bool> conversation-visible: root.window-visible && root.has-chat && (!root.compact || root.show-chat);
     private property <int> details-generation: 0;
     changed history-scroll-y => { details-scan.restart(); }
-    changed window-visible => { details-scan.restart(); }
-    details-scan := Timer { running: false; interval: 80ms; triggered => { root.details-generation += 1; } }
+    changed conversation-visible => { details-scan.restart(); }
+    changed auth-required => { details-scan.restart(); }
+    // Debounce viewport changes once. A repeating timer used to wake every
+    // history delegate at 12.5 Hz, even while the maximized window was idle.
+    details-scan := Timer {
+        running: false;
+        interval: 80ms;
+        triggered => { self.stop(); root.details-generation += 1; }
+    }
     private property <int> jump-target;
     private property <int> jump-generation;
     property <length> composer-extra: root.reply-message > 0 || root.edit-message-id > 0 ? 50px : 0px;
@@ -998,6 +1005,7 @@ export component Desktop inherits Window {
                     visible: root.has-chat;
                     viewport-width: self.width;
                     viewport-height: content-height + flight-padding;
+                    changed view-height => { details-scan.restart(); }
                     changed viewport-height => {
                         details-scan.restart();
                         if root.follow-sending || root.follow-incoming { root.scroll-to-bottom(); }
@@ -1010,12 +1018,17 @@ export component Desktop inherits Window {
                         spacing: 0px;
                         for message[index] in root.messages : Rectangle {
                             property <int> scanned-generation: -1;
-                            property <string> detail-key: message.photo-key;
+                            property <bool> needs-details: message.id > 0
+                                && ((message.is-photo && !message.has-preview && !message.preview-failed)
+                                    || (message.reply-to > 0 && !message.reply-resolved));
+                            property <string> detail-key: "\{message.id}/\{message.reply-to}/\{message.photo-key}";
                             changed detail-key => { self.scanned-generation = -1; }
+                            changed needs-details => { if self.needs-details { self.scanned-generation = -1; } }
                             // Read row geometry after layout, never while the
                             // repeater is constructing its own layout delegates.
                             Timer {
-                                running: parent.scanned-generation != root.details-generation;
+                                running: parent.needs-details && root.conversation-visible && !root.auth-required
+                                    && parent.scanned-generation != root.details-generation;
                                 interval: 1ms;
                                 triggered => {
                                     parent.scanned-generation = root.details-generation;
@@ -1044,6 +1057,10 @@ export component Desktop inherits Window {
                             property <length> final-y: history-items.y + self.y + history.viewport-y + top-offset - hidden-height;
                             width: history.width;
                             height: final-height - hidden-height;
+                            // A rectangular clip lets Skia skip entire offscreen
+                            // subtrees, not just their individual drawing commands.
+                            // Flying/revealing bubbles must still overflow the row.
+                            clip: sending.progress >= 1 && receiving.progress >= 1;
                             if date-start : Rectangle {
                                 opacity: sending.mix;
                                 x: (parent.width - self.width) / 2;

@@ -189,17 +189,20 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     ui.show().unwrap();
     window.advance(500);
 
-    for (name, width, scale, dark, channel) in [
-        ("desktop-100", 1100, 1.0, true, false),
-        ("desktop-125", 1100, 1.25, true, false),
-        ("desktop-150", 1100, 1.5, true, false),
-        ("desktop-175", 1100, 1.75, true, false),
-        ("desktop-200", 1100, 2.0, true, false),
-        ("desktop-300", 1100, 3.0, true, false),
-        ("desktop-light", 1100, 1.0, false, false),
-        ("channel", 1100, 1.0, true, true),
-        ("compact", 430, 1.0, true, false),
-        ("menu", 1100, 1.0, true, false),
+    for (name, width, height, scale, dark, channel) in [
+        ("desktop-100", 1100, 720, 1.0, true, false),
+        ("desktop-125", 1100, 720, 1.25, true, false),
+        ("desktop-150", 1100, 720, 1.5, true, false),
+        ("desktop-175", 1100, 720, 1.75, true, false),
+        ("desktop-200", 1100, 720, 2.0, true, false),
+        ("desktop-300", 1100, 720, 3.0, true, false),
+        ("desktop-light", 1100, 720, 1.0, false, false),
+        ("maximized-1080p", 1920, 1040, 1.0, true, false),
+        ("maximized-1440p-150", 1706, 933, 1.5, true, false),
+        ("maximized-4k-200", 1920, 1040, 2.0, true, false),
+        ("channel", 1100, 720, 1.0, true, true),
+        ("compact", 430, 720, 1.0, true, false),
+        ("menu", 1100, 720, 1.0, true, false),
     ] {
         let mut active = chats[0].row.clone();
         active.read_outbox_max_id = 10;
@@ -226,7 +229,7 @@ fn portable_interface_renders_icons_at_multiple_scales() {
             scale_factor: scale,
         });
         let physical_width = (width as f32 * scale) as u32;
-        let physical_height = (720.0 * scale) as u32;
+        let physical_height = (height as f32 * scale) as u32;
         window
             .window
             .set_size(PhysicalSize::new(physical_width, physical_height));
@@ -328,6 +331,8 @@ fn portable_interface_renders_icons_at_multiple_scales() {
     verify_context_menu(&window, &ui);
     verify_photos_and_replies(&window, &ui);
     verify_rich_text_and_composer(&window, &ui);
+    verify_maximized_history_work(&window, &ui);
+    verify_network_burst_yields(&window, &ui);
     ui.hide().unwrap();
     drop(ui);
 
@@ -1463,6 +1468,159 @@ fn verify_rich_text_and_composer(window: &PreviewWindow, ui: &Desktop) {
     ui.set_draft(Default::default());
     window.take_snapshot().unwrap();
     assert!((ui.get_composer_height() - 46.0).abs() <= 1.0);
+}
+
+fn verify_network_burst_yields(window: &PreviewWindow, ui: &Desktop) {
+    let (bridge, _commands, events) = telegram::TelegramBridge::offline_for_rendering();
+    let state = Rc::new(RefCell::new(Demo::with_bridge(bridge)));
+    let (weak, callback_state) = (ui.as_weak(), state.clone());
+    ui.on_network_events(move || {
+        if let Some(ui) = weak.upgrade() {
+            callback_state.borrow_mut().poll_telegram(&ui);
+        }
+    });
+    for index in 0..130 {
+        events
+            .send(telegram::TgEvent::Error {
+                message: format!("burst-{index}"),
+            })
+            .unwrap();
+    }
+    state.borrow_mut().poll_telegram(ui);
+    assert_ne!(
+        ui.get_network_status(),
+        "burst-129",
+        "one UI turn must not drain a large event burst"
+    );
+    for _ in 0..130 {
+        window.advance(2);
+        if ui.get_network_status() == "burst-129" {
+            break;
+        }
+    }
+    assert_eq!(
+        ui.get_network_status(),
+        "burst-129",
+        "deferred batches must preserve the tail of the queue"
+    );
+    window.advance(2);
+    ui.on_network_events(|| {});
+}
+
+// Work-count assertions are deterministic on shared CI runners. Snapshot
+// timings are not a GPU/DWM frame-rate measurement and must not gate CI.
+fn verify_maximized_history_work(window: &PreviewWindow, ui: &Desktop) {
+    window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 1.0 });
+    window.window.set_size(PhysicalSize::new(1920, 1040));
+    ui.set_auth_required(false);
+    ui.set_window_visible(true);
+    ui.set_has_chat(true);
+    ui.set_show_chat(true);
+    ui.set_chat_menu_open(false);
+    ui.set_emoji_open(false);
+    ui.set_draft(Default::default());
+    let requested = Rc::new(RefCell::new(Vec::new()));
+    let calls = requested.clone();
+    ui.on_request_details(move |id| calls.borrow_mut().push(id));
+    let rows = Rc::new(VecModel::from(
+        (1..=400)
+            .map(|id| {
+                let mut row = message(
+                    &format!("Сообщение {id}: проверка длинной истории"),
+                    "12:00",
+                    id % 2 == 0,
+                );
+                row.id = id;
+                row.date = "10 ноября".into();
+                row
+            })
+            .collect::<Vec<_>>(),
+    ));
+    ui.set_messages(ModelRc::from(rows.clone()));
+    window.take_snapshot().unwrap();
+    ui.invoke_scroll_to_bottom();
+    let settle = || {
+        for _ in 0..4 {
+            window.advance(100);
+            window.take_snapshot().unwrap();
+        }
+    };
+    settle();
+    assert!(
+        requested.borrow().is_empty(),
+        "plain text must not trigger detail scans"
+    );
+
+    // One unresolved quote above the viewport and one at its bottom. Keep
+    // requests unresolved so a repeating idle timer cannot hide behind caching.
+    for index in [0, 399] {
+        let mut row = rows.row_data(index).unwrap();
+        row.reply_to = 9000;
+        rows.set_row_data(index, row);
+    }
+    window.take_snapshot().unwrap();
+    ui.invoke_scroll_to_bottom();
+    settle();
+    assert!(requested.borrow().contains(&400));
+    assert!(
+        !requested.borrow().contains(&1),
+        "offscreen details must stay lazy"
+    );
+    let at_rest = requested.borrow().len();
+    for _ in 0..12 {
+        window.advance(80);
+        window.take_snapshot().unwrap();
+    }
+    assert_eq!(
+        requested.borrow().len(),
+        at_rest,
+        "idle history must not poll every 80ms"
+    );
+
+    requested.borrow_mut().clear();
+    ui.set_history_scroll_y(0.0);
+    settle();
+    assert!(
+        requested.borrow().contains(&1),
+        "scrolling must request newly visible details"
+    );
+    assert!(!requested.borrow().contains(&400));
+    save_animation_frame("maximized-history-top", &window.take_snapshot().unwrap());
+
+    requested.borrow_mut().clear();
+    ui.set_window_visible(false);
+    ui.invoke_scroll_to_bottom();
+    settle();
+    assert!(
+        requested.borrow().is_empty(),
+        "hidden windows must not request details"
+    );
+    ui.set_window_visible(true);
+    settle();
+    assert!(
+        requested.borrow().contains(&400),
+        "restoring the window must rescan"
+    );
+    requested.borrow_mut().clear();
+    window.window.set_size(PhysicalSize::new(1920, 1000));
+    settle();
+    assert!(
+        !requested.borrow().is_empty(),
+        "resizing a long history must rescan even when content height is unchanged"
+    );
+
+    let mut last = rows.row_data(399).unwrap();
+    last.reply_resolved = true;
+    rows.set_row_data(399, last);
+    settle();
+    requested.borrow_mut().clear();
+    ui.set_history_scroll_y(ui.get_history_scroll_y() + 1.0);
+    settle();
+    assert!(
+        requested.borrow().is_empty(),
+        "resolved details must not be requested again"
+    );
+    ui.on_request_details(|_| {});
 }
 
 fn save_animation_frame(name: &str, pixels: &slint::SharedPixelBuffer<Rgba8Pixel>) {

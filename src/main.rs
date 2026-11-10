@@ -49,6 +49,7 @@ struct Demo {
     live_mode: bool,
     next_local_id: i32,
     pending_send: Option<sending::PendingSend>,
+    network_poll: Timer,
     bridge: telegram::TelegramBridge,
 }
 
@@ -95,6 +96,7 @@ impl Demo {
             live_mode: false,
             next_local_id: -1,
             pending_send: None,
+            network_poll: Timer::default(),
             bridge,
         }
     }
@@ -226,6 +228,9 @@ impl Demo {
         }
         let idx = self.active.min(self.chats.len() - 1);
         let chat = &self.chats[idx];
+        // Resolve once when opening/refreshing history, not once per visible
+        // row in the deferred thumbnail scan.
+        details::resolve_local(&chat.messages, &chat.row.title);
         ui.set_active_chat(chat.row.clone());
         ui.set_messages(ModelRc::from(Rc::clone(&chat.messages)));
         let weak = ui.as_weak();
@@ -365,12 +370,32 @@ impl Demo {
     }
 
     fn poll_telegram(&mut self, ui: &Desktop) {
+        self.network_poll.stop();
         self.bridge.begin_poll();
+        let started = std::time::Instant::now();
+        let mut handled = 0;
         let mut avatars_changed = false;
         loop {
+            // Yield between events so a burst of background results cannot
+            // monopolize the UI thread. One expensive event can still exceed
+            // this soft budget; the queue is never dropped or reordered.
+            if handled >= 32 || (handled > 0 && started.elapsed() >= Duration::from_millis(4)) {
+                let weak = ui.as_weak();
+                self.network_poll.start(
+                    slint::TimerMode::SingleShot,
+                    Duration::from_millis(1),
+                    move || {
+                        if let Some(ui) = weak.upgrade() {
+                            ui.invoke_network_events();
+                        }
+                    },
+                );
+                break;
+            }
             let Some(ev) = self.bridge.try_recv() else {
                 break;
             };
+            handled += 1;
             match ev {
                 telegram::TgEvent::Presence {
                     peer_id,
@@ -1330,7 +1355,6 @@ fn main() -> Result<(), slint::PlatformError> {
             return;
         };
         let peer = chat.row.id;
-        details::resolve_local(&chat.messages, &chat.row.title);
         let Some(row) = chat.messages.iter().find(|row| row.id == mid) else {
             return;
         };

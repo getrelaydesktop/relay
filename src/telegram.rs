@@ -302,7 +302,15 @@ impl TelegramBridge {
         let (commands, rx) = async_mpsc::unbounded_channel();
         let errors = tx.clone();
         thread::spawn(move || {
-            match tokio::runtime::Builder::new_current_thread()
+            // Network futures may run independently, while CPU-heavy media
+            // work uses the separate blocking pool. Leave a core for the UI
+            // when possible and avoid creating a worker per logical CPU.
+            let workers = thread::available_parallelism()
+                .map(|count| count.get().saturating_sub(1).clamp(1, 4))
+                .unwrap_or(2);
+            match tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(workers)
+                .max_blocking_threads(4)
                 .enable_all()
                 .build()
             {
@@ -642,14 +650,10 @@ impl Worker {
                 download_image(&client, &photo, 1024 * 1024, 1024).await
             };
             if let Ok(Ok(pixels)) = tokio::time::timeout(Duration::from_secs(15), download).await {
-                // Keep enough source detail for high-DPI avatars. Skia samples
-                // and clips this image at the actual display scale.
-                let pixels = if pixels.width() > 256 || pixels.height() > 256 {
-                    image::DynamicImage::ImageRgba8(pixels)
-                        .resize(256, 256, image::imageops::FilterType::Lanczos3)
-                        .into_rgba8()
-                } else {
-                    pixels
+                // Lanczos resampling is CPU work: do not block the async
+                // executor while several visible avatars arrive together.
+                let Ok(pixels) = resize_image(pixels, 256).await else {
+                    return;
                 };
                 let _ = tx.send(TgEvent::AvatarReady {
                     peer_id: id,
@@ -1418,6 +1422,20 @@ impl Worker {
 #[cfg(test)]
 mod event_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn background_resize_preserves_aspect_ratio_without_upscaling() {
+        let large = image::RgbaImage::from_pixel(1024, 512, image::Rgba([20, 80, 160, 255]));
+        let resized = resize_image(large, 256).await.unwrap();
+        assert_eq!(resized.dimensions(), (256, 128));
+        let small = image::RgbaImage::from_pixel(32, 16, image::Rgba([40, 90, 170, 255]));
+        let resized = resize_image(small.clone(), 960).await.unwrap();
+        assert_eq!(
+            resized, small,
+            "small previews must not allocate an upscaled buffer"
+        );
+    }
+
     #[test]
     fn bridge_coalesces_notifications_and_stays_idle_without_events() {
         let (bridge, _commands, events) = TelegramBridge::offline_for_rendering();
@@ -1521,9 +1539,18 @@ async fn thumbnail_image(
     } else {
         download_image(client, &media, 4 * 1024 * 1024, 8192).await?
     };
+    resize_image(pixels, 960).await
+}
+
+// Reuse the runtime's bounded blocking pool instead of adding an OS thread
+// for each image. Skia images/models are still created on the Slint thread.
+async fn resize_image(pixels: image::RgbaImage, limit: u32) -> Result<image::RgbaImage> {
+    if pixels.width() <= limit && pixels.height() <= limit {
+        return Ok(pixels);
+    }
     tokio::task::spawn_blocking(move || {
         image::DynamicImage::ImageRgba8(pixels)
-            .resize(960, 960, image::imageops::FilterType::Lanczos3)
+            .resize(limit, limit, image::imageops::FilterType::Lanczos3)
             .into_rgba8()
     })
     .await

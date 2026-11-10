@@ -33,8 +33,10 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_W
 # Render UI regression tests with the same engine as the application.
 i-slint-renderer-skia = "=1.16.1"
 
+# Optimize the generated Slint layout/binding code as well as dependencies.
+# Keep dev builds inexpensive; release artifacts are the performance build.
 [profile.release.package.relay-desktop]
-opt-level = 1
+opt-level = 3
 
 [profile.dev]
 opt-level = 1
